@@ -1,0 +1,58 @@
+name: Release
+
+# Publishes a tag and GitHub release whenever plugin.toml's version has no tag yet, whether the
+# version was bumped by hand in a normal push or by running this workflow with a bump level.
+on:
+  push:
+    branches: [main]
+    paths: [plugin.toml]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Bump plugin.toml before releasing
+        type: choice
+        options: [none, patch, minor, major]
+        default: none
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Bump version
+        if: ${{ inputs.bump && inputs.bump != 'none' }}
+        run: |
+          current=$(sed -n 's/^version = "\(.*\)"/\1/p' plugin.toml)
+          IFS=. read -r major minor patch <<< "$current"
+          case "${{ inputs.bump }}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          sed -i "s/^version = \".*\"/version = \"$major.$minor.$patch\"/" plugin.toml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: release $major.$minor.$patch"
+          git push
+      - name: Tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' plugin.toml)
+          tag="v$version"
+          if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+            echo "$tag already exists; nothing to release"
+            exit 0
+          fi
+          # Release notes: the matching CHANGELOG.md section, else generated from commits.
+          awk -v v="$version" '$0 ~ "^## "v"( |$)" {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
+          if [ -s notes.md ]; then
+            gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --notes-file notes.md
+          else
+            gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes
+          fi

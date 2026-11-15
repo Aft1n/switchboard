@@ -1,0 +1,14 @@
+schema = 1
+id = "switchboard"
+name = "Switchboard"
+version = "0.1.0"
+description = "Workspace navigation, live agent steps, and provider quota rings."
+icon = "terminal"
+host = "sidebar-host.luau"
+window = "window.luau"
+styles = ["switchboard.css"]
+
+[[blocks]]
+id = "sidebar"
+title = "Switchboard"
+palette = false

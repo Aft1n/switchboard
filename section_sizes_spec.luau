@@ -1,0 +1,15 @@
+local split=require("./section_sizes")
+local function eq(a,b) assert(a==b,tostring(a).." ~= "..tostring(b)) end
+local sizes=split.normalize({3,7})
+eq(sizes[1],0.3); eq(sizes[2],0.7)
+eq(split.read(nil)[1],0.42)
+eq(split.normalize({0,1}),nil)
+eq(split.normalize({-1,2}),nil)
+eq(split.normalize({0/0,1}),nil)
+eq(split.normalize({math.huge,1}),nil)
+eq(split.normalize({0.5}),nil)
+eq(split.normalize({"0.5",0.5}),nil)
+eq(split.same({0.3,0.7},{0.3001,0.6999}),true)
+eq(split.same({0.3,0.7},{0.4,0.6}),false)
+print("shared divider validation checks passed")
+return true

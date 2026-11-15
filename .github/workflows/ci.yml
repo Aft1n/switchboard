@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Luau
+        run: |
+          curl -fsSL https://github.com/luau-lang/luau/releases/latest/download/luau-ubuntu.zip -o luau.zip
+          unzip -q luau.zip -d "$HOME/luau"
+          echo "$HOME/luau" >> "$GITHUB_PATH"
+      - name: Compile every module
+        run: |
+          for f in *.luau; do
+            [ "$f" = tern.d.luau ] && continue
+            luau-compile --text "$f" > /dev/null || { echo "compile failed: $f"; exit 1; }
+          done
+      - name: Specs
+        run: luau spec/run.luau
