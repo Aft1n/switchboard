@@ -2,6 +2,7 @@ local section_sizes = require("./section_sizes")
 
 local SECTION_SIZES_KEY = "section_sizes"
 local UPDATE_ACTION = "switchboard.sidebar.update"
+local EXPANDED_KEY = "subagents_expanded"
 
 local function send_to_window(cx, route, value)
 	local encoded = tern.base64.encode(tern.json.encode(value), { url = true })
@@ -27,8 +28,10 @@ local function toggle_disclosure(node, key): boolean
 	local p = node.p
 	if type(p) == "table" and p.key == key then
 		local class = p.class or ""
-		local open = string.find(class, OPEN, 1, true) ~= nil
-		p.class = if open then string.gsub(class, "%s*" .. OPEN, "") else class .. " " .. OPEN
+		local from, to = string.find(class, OPEN, 1, true)
+		local open = from ~= nil
+		-- Plain splice: OPEN contains hyphens, which are quantifiers in Lua patterns.
+		p.class = if open then string.gsub(string.sub(class, 1, from - 1), "%s+$", "") .. string.sub(class, to + 1) else class .. " " .. OPEN
 		if type(p.attrs) == "table" then p.attrs["aria-expanded"] = if open then "false" else "true" end
 		return true
 	end
@@ -86,9 +89,17 @@ local spec = {
 		end
 
 		if ev.ev == "action" then
-			-- Flip the disclosure here so it answers at once; the window persists the same toggle.
+			-- The disclosure is handled entirely here: flip the pushed tree and persist the shared kv
+			-- flag the window reads on its next render. Calling into the window (cx:open) ran before
+			-- this block could re-render and cost ~500 ms per click.
 			local parent = type(ev.act) == "string" and string.match(ev.act, "^subagents:(%d+)$")
-			if parent and type(state.tree) == "table" then toggle_disclosure(state.tree, "subagents-toggle" .. parent) end
+			if parent and type(state.tree) == "table" and toggle_disclosure(state.tree, "subagents-toggle" .. parent) then
+				local open = tern.kv.get(EXPANDED_KEY)
+				if type(open) ~= "table" then open = {} end
+				open[parent] = not open[parent]
+				tern.kv.set(EXPANDED_KEY, open)
+				return
+			end
 			send_to_window(cx, "action", {pane=cx.pane,event=ev})
 		end
 	end,

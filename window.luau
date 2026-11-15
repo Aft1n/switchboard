@@ -280,9 +280,13 @@ local function all_infos(cx)
 	local omp = {}
 	for _, info in infos do omp[info.pane] = true end
 	local next_remote, live = {}, {}
+	local host_of_pane = {}
+	for _, host in cx.hosts:list() do
+		for _, id in host.panes or {} do host_of_pane[id] = host_of_pane[id] or host end
+	end
 	for _, pane in cx.session:panes() do
 		if pane.kind == "terminal" and not omp[pane.pane] and not owned[pane.pane] then
-			local host = host_of(cx, "panes", pane.pane)
+			local host = host_of_pane[pane.pane]
 			local key
 			if host and host.kind == "remote" then
 				key = terminal_agents.classify_title(pane.title, pane.running and pane.running.line)
@@ -366,17 +370,14 @@ local function scan_isolation(cx)
 	if isolation_scan.busy or tern.now() - isolation_scan.at < ISOLATION_TTL then return end
 	isolation_scan.busy = true
 	local pending = 2
-	local last_cx = cx
-	local function finish(nextCx)
-		if nextCx then last_cx = nextCx end
+	local function finish()
 		pending -= 1
 		if pending == 0 then
 			isolation_scan.at = tern.now()
 			isolation_scan.busy = false
-			if last_cx then refresh(last_cx) end
 		end
 	end
-	local checkouts = pcall(tern.process.run, {ovnfs_bin(), "ls", "--json"}, {timeout_ms = 5000}, function(result, nextCx)
+	local checkouts = pcall(tern.process.run, {ovnfs_bin(), "ls", "--json"}, {timeout_ms = 5000}, function(result)
 		isolation_scan.checkouts = {}
 		local data = decode_json(result.stdout)
 		if result.status == 0 and type(data) == "table" and type(data.checkouts) == "table" then
@@ -389,10 +390,10 @@ local function scan_isolation(cx)
 				end
 			end
 		end
-		finish(nextCx)
+		finish()
 	end)
-	if not checkouts then finish(cx) end
-	local managed = pcall(tern.process.run, {executables.omp_bin(), "worktree", "list", "--json"}, {timeout_ms = 5000}, function(result, nextCx)
+	if not checkouts then finish() end
+	local managed = pcall(tern.process.run, {executables.omp_bin(), "worktree", "list", "--json"}, {timeout_ms = 5000}, function(result)
 		isolation_scan.worktrees = {}
 		local data = decode_json(result.stdout)
 		local list = if type(data) == "table" then (if type(data.worktrees) == "table" then data.worktrees else data) else nil
@@ -406,9 +407,9 @@ local function scan_isolation(cx)
 				end
 			end
 		end
-		finish(nextCx)
+		finish()
 	end)
-	if not managed then finish(cx) end
+	if not managed then finish() end
 end
 
 local function git_isolation(cx, cwd)
@@ -420,7 +421,7 @@ local function git_isolation(cx, cwd)
 	isolation_git[cwd] = entry
 	local ok = pcall(tern.process.run, {
 		"/usr/bin/git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir", "--abbrev-ref", "HEAD",
-	}, {timeout_ms = 5000}, function(result, nextCx)
+	}, {timeout_ms = 5000}, function(result)
 		entry.pending = nil
 		entry.at = tern.now()
 		if result.status == 0 then
@@ -430,7 +431,6 @@ local function git_isolation(cx, cwd)
 				entry.branch = if branch and branch ~= "HEAD" then branch else nil
 			end
 		end
-		if nextCx then refresh(nextCx) end
 	end)
 	if not ok then entry.pending = nil end
 	return entry
@@ -485,7 +485,7 @@ local function isolation_from_session(cx, file)
 	session_scan_busy = true
 	entry = {at = now, pending = true, iso = entry and entry.iso}
 	session_isolation[file] = entry
-	local ok = pcall(tern.process.run, {"/usr/bin/tail", "-n", "120", file}, {timeout_ms = 5000}, function(result, nextCx)
+	local ok = pcall(tern.process.run, {"/usr/bin/tail", "-n", "120", file}, {timeout_ms = 5000}, function(result)
 		entry.pending = nil
 		entry.at = tern.now()
 		session_scan_busy = false
@@ -525,7 +525,6 @@ local function isolation_from_session(cx, file)
 				end
 			end
 		end
-		if nextCx then refresh(nextCx) end
 	end)
 	if not ok then
 		entry.pending = nil
@@ -805,11 +804,11 @@ local function refresh_sessions(cx, agents, titles)
 		session_busy=false
 		if not nextCx or not result or result.status~=0 then return end
 		local old=pane_sessions
-		local parsed=agent_sessions.parse(result.stdout)
+		local decoded_ok, decoded = pcall(tern.json.decode, result.stdout)
+		local parsed = (decoded_ok and agent_sessions.from_decoded(decoded)) or agent_sessions.parse(result.stdout)
 		local at=tern.now()
 		for _,mapping in parsed do mapping.at=at end
 		for key in moved_sessions do if not nextCx.session:pane(tonumber(key) or key) then moved_sessions[key]=nil end end
-		local moved=false
 		-- Same pane with a different session in the same cwd is OMP /new.
 		for _,key in agent_sessions.new_sessions(old,parsed) do
 			local new=parsed[key]
@@ -869,7 +868,6 @@ local function refresh_sessions(cx, agents, titles)
 					new_tab_titles[tab]={pane=pane,old=old_title or current_title}
 				end
 				moved_sessions[key]=new.session
-				moved=true
 				if old_session then
 					-- Resume the old session beside the old tab's sidebar so both
 					-- sessions stay active; never close the old pane's tab.
@@ -895,17 +893,12 @@ local function refresh_sessions(cx, agents, titles)
 			end
 		end
 		pane_sessions=parsed
-		local any=false
 		for _,item in wanted do
 			local mapping=parsed[item.key]
-			local previous=old[item.key]
 			if mapping and (mapping.cwd or "")==item.cwd and (item.title==nil or mapping.title==nil or mapping.title==item.title) then
 				session_misses[item.key]=nil
-				-- A 30 s re-read of unchanged mappings must not force a render.
-				if not previous or previous.session~=mapping.session or previous.cwd~=mapping.cwd or previous.title~=mapping.title then any=true end
 			else session_misses[item.key]=item.sig end
 		end
-		if any or moved then refresh(nextCx) end
 	end)
 	if not ok then session_busy=false end
 end
@@ -913,6 +906,7 @@ end
 -- Infos from the last full refresh: a click that only changes presentation re-renders from them.
 local last_infos
 
+local pushed_at = {}
 local function render(cx, infos, reveal_target, visible_only)
 	local tabs = cx.session:tabs()
 	-- A /new tab starts as "New chat"; hand it back to the pane label as soon as
@@ -954,7 +948,7 @@ local function render(cx, infos, reveal_target, visible_only)
 	if #data.agents>0 then
 		local titles={}
 		for _,pane in panes do titles[pane.pane]=pane.title end
-		refresh_sessions(cx,data.agents,titles)
+		refresh_sessions(cx, data.agents, titles)
 	end
 	local session_by_tab={}
 	for _,session in cx.session:sessions() do for _,tab in session.tabs do session_by_tab[tab]=session.id end end
@@ -1033,6 +1027,8 @@ local function render(cx, infos, reveal_target, visible_only)
 	data.sidebar_settings = sidebar_settings
 	data.workspace_expanded = workspace_expanded
 	data.workspace_lift = workspace_lift
+	-- The sidebar block persists disclosure toggles itself; re-read the shared kv.
+	subagents_expanded = tern.kv.get("subagents_expanded") or subagents_expanded
 	data.subagents_expanded = subagents_expanded
 	-- One stable color slot per project name, shared by workspace rows and agents.
 	project_colors_store=tern.kv.get("project_colors") or project_colors_store
@@ -1061,22 +1057,37 @@ local function render(cx, infos, reveal_target, visible_only)
 	-- Every tab's sidebar shows the same global data. Updating only the focused
 	-- tab's pane left a restored or reloaded visible sidebar on an old tree, so its
 	-- row actions (lift/drop) never changed.
-	-- A host switch remounts the other host's blocks; resend the tree instead of trusting `last`.
+	-- A host switch remounts the other host's blocks; forget what they were sent so they get the tree again.
 	local host_id=cx.hosts:current().id
-	local force = tern.now() < force_until or host_id ~= rendered_host
+	if host_id ~= rendered_host then for pane in owned do last[pane]=nil end end
 	rendered_host=host_id
-	for pane in owned do
-		if (force or last[pane] ~= signature) and (not visible_only or pane == data.sidebar_pane) then
-			if is_canvas[pane] then
-				local ok=pcall(cx.canvas.set,cx.canvas,pane,{view=tree})
-				if ok then last[pane] = signature end
-			else
-				-- A sidebar pane can outlive its program for a poll; one dead pane
-				-- must not abort the updates for every other sidebar.
-				local ok=pcall(function() cx.session:event(pane,{ev="action",act="switchboard.sidebar.update",value=signature}) end)
-				if ok then last[pane]=signature end
-			end
+	local force = tern.now() < force_until
+	local function push(pane)
+		pushed_at[pane]=tern.now()
+		if is_canvas[pane] then
+			local ok=pcall(cx.canvas.set,cx.canvas,pane,{view=tree})
+			if ok then last[pane] = signature end
+		else
+			-- A sidebar pane can outlive its program for a poll; one dead pane
+			-- must not abort the updates for every other sidebar.
+			local ok=pcall(function() cx.session:event(pane,{ev="action",act="switchboard.sidebar.update",value=signature}) end)
+			if ok then last[pane]=signature end
 		end
+	end
+	-- Only the visible sidebar needs the tree now. Every other tab's block (often dozens) would each
+	-- apply and diff a full tree per change, stalling animations; they catch up, oldest first, a couple
+	-- per render.
+	local stale={}
+	for pane in owned do
+		if pane == data.sidebar_pane then
+			if force or last[pane] ~= signature then push(pane) end
+		elseif last[pane] ~= signature then
+			table.insert(stale,pane)
+		end
+	end
+	if not visible_only and #stale > 0 then
+		table.sort(stale,function(a,b) return (pushed_at[a] or 0) < (pushed_at[b] or 0) end)
+		for i=1,math.min(#stale,2) do push(stale[i]) end
 	end
 end
 
@@ -1144,12 +1155,15 @@ refresh = function(cx, read)
 				return
 			end
 		end
-		if target and not owned[target] then place(cx,target) end
+		if target and not owned[target] then place(cx, target) end
 		prewarm_next(cx)
 		local infos = all_infos(cx)
 		sample(cx, infos, read == true)
 		last_infos = infos
-		render(cx, infos)
+		tern.timer(0, function(nextCx)
+			local ok_render, err_render = pcall(render, nextCx, infos)
+			if not ok_render then tern.log.warn("switchboard render failed: " .. tostring(err_render)) end
+		end)
 		local current_pane=cx.session:focused()
 		local current_tab=current_pane and cx.session:tab_of(current_pane)
 		if not current_tab or not pending[current_tab] then return end
@@ -1528,6 +1542,7 @@ local function sidebar_action(ev, cx)
 	end
 	local parent_id=string.match(ev.act,"^subagents:(%d+)$")
 	if parent_id then
+	 subagents_expanded = tern.kv.get("subagents_expanded") or subagents_expanded
 	 subagents_expanded[parent_id]=not subagents_expanded[parent_id]
 	 tern.kv.set("subagents_expanded",subagents_expanded)
 	 -- Presentation-only change: re-render the visible sidebar from the last infos; other tabs'
@@ -1950,13 +1965,12 @@ end
 local function poll_activity(cx)
 	if cx and enabled then
 		local infos=all_infos(cx)
-		read_terminal_screens(cx,infos)
-		sample(cx,infos,true)
-		-- First sight has no snapshot; two reads per tick halve the burst
-		-- without pushing one timer callback past its budget.
+		read_terminal_screens(cx, infos)
+		sample(cx, infos, true)
+		-- First sight has no snapshot: its extra read runs on a tick of its own, so one callback never does two transcript reads.
 		for _, record in activity do
 			if record.read_at == -math.huge then
-				sample(cx,infos,true)
+				tern.timer(0, function(nextCx) sample(nextCx, infos, true) end)
 				break
 			end
 		end

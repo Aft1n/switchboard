@@ -68,6 +68,7 @@ function M.scan(messages, previous)
 	end
 	local steps = {}
 	local reset = false
+	local recent -- steps of the latest earlier turn that had any, shown by an idle card whose newest turn used no tools
 	if type(messages) == "table" then
 		for _, message in messages do
 			if type(message) == "table" then
@@ -75,6 +76,7 @@ function M.scan(messages, previous)
 					-- A todo list is session state: a mid-run steer must not wipe it. Only a
 					-- finished list is dropped when the next prompt starts new work.
 					if todo and todo.done >= todo.total then todo = nil end
+					if #steps > 0 then recent = steps end
 					steps, reset, response = {}, true, nil
 				end
 				if message.role == "assistant" and type(message.text)=="string" and message.text~="" then
@@ -116,7 +118,7 @@ function M.scan(messages, previous)
 		end
 	end
 	if #steps == 0 and not reset then steps = prior_steps or {} end
-	return {todo=todo,steps=steps,response=response}
+	return {todo=todo,steps=steps,response=response,recent_steps=recent}
 end
 
 -- Prefer the latest visible native todo summary, including the composer summary.
@@ -139,6 +141,8 @@ function M.from_view(root)
 end
 function M.sample(messages,previous,state,native_view)
  local result=M.scan(messages,previous)
+ if state=="idle" and #result.steps==0 and result.recent_steps and #result.recent_steps>0 then result.steps=result.recent_steps end
+ result.recent_steps=nil
  local native=M.from_view(native_view)
  if native then result.todo=native end
  if state=="idle" and type(previous)=="table" then
@@ -153,7 +157,7 @@ end
 function M.next_read(records,now,focused)
  local pick,deadline,priority
  for pane,record in records do
-  local due=if record.dirty then -math.huge else record.read_at+(if record.state=="working" or #(record.subagents or {})>0 then 3000 else 15000)
+  local due=if record.read_at==-math.huge then -math.huge elseif record.dirty then record.read_at else record.read_at+(if record.state=="working" or #(record.subagents or {})>0 then 3000 else 15000)
   local rank=if pane==focused then 0 elseif record.state=="waiting_input" then 1 elseif record.state=="working" then 2 else 3
   if due<=now and (not pick or due<deadline or (due==deadline and rank<priority)) then
    pick,deadline,priority=pane,due,rank

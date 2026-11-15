@@ -78,4 +78,22 @@ function M.resume_command(executable, session)
 	return string.format("%q --resume %s", executable, session)
 end
 
+-- Same mapping as `parse`, from an already decoded `tern inspect --json` value.
+-- Returns nil when the shape is not what inspect emits; the caller then falls back to `parse`.
+function M.from_decoded(value)
+	if type(value) ~= "table" or type(value.panes) ~= "table" then return nil end
+	local out = {}
+	for _, pane in value.panes do
+		local file = type(pane) == "table" and pane.omp_session_file
+		if type(file) == "string" and file ~= "" and type(pane.pane) == "number" then
+			local session = string.match(file, "([%w%-]+)%.jsonl$")
+			if session then
+				local key = string.format("%.0f", pane.pane)
+				out[key] = {session=session, cwd=if type(pane.cwd) == "string" then pane.cwd else "", title=if type(pane.title) == "string" then pane.title else nil, file=file}
+			end
+		end
+	end
+	return out
+end
+
 return M

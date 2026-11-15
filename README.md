@@ -5,7 +5,7 @@ place: OMP, Claude Code, Codex, pi, OpenCode and other harnesses, local or on a 
 state, progress and provider quota rings.
 
 <p align="center">
-  <img src="docs/images/sidebar-in-window.png" alt="Switchboard sidebar next to an agent tab" width="640">
+  <img src="https://github.com/Aft1n/switchboard/raw/main/docs/images/sidebar.png" alt="Switchboard sidebar with workspaces, agents and quota rings" width="320">
 </p>
 
 ## Highlights
@@ -22,7 +22,7 @@ state, progress and provider quota rings.
 
 <table>
   <tr>
-    <td width="300"><img src="docs/images/sidebar.png" alt="Switchboard sidebar" width="300"></td>
+    <td width="420"><img src="docs/images/sidebar-in-window.png" alt="Switchboard sidebar next to an agent tab" width="420"></td>
     <td valign="top">
 
 1. **Header**: the host chip (`LOCAL` / `VPS`; click to switch host) and the new-workspace button.

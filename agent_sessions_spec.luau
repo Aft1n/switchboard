@@ -56,6 +56,19 @@ eq(parsed["2"].session,"01a1daba-5f59-7409-bcad-f6e1c2a0dc7e")
 eq(parsed["2"].cwd,"/Users/x/repo")
 eq(parsed["2"].title,'Fix "auth" flow')
 
+-- The native-decoded walk must agree with the line parser on the same panes.
+local decoded=sessions.from_decoded({panes={
+  {pane=1,cwd="/Users/x/repo",omp_session_file=nil},
+  {pane=2,cwd="/Users/x/repo",title='Fix "auth" flow',omp_session_file="/Users/x/.omp/agent/sessions/-x-repo/2026-11-14T15-43-29-625Z_01a1daba-5f59-7409-bcad-f6e1c2a0dc7e.jsonl"},
+  {pane=3,cwd="/Users/x/repo",omp_session_file=""},
+}})
+eq(decoded["1"],nil)
+eq(decoded["3"],nil)
+eq(decoded["2"].session,"01a1daba-5f59-7409-bcad-f6e1c2a0dc7e")
+eq(decoded["2"].cwd,"/Users/x/repo")
+eq(decoded["2"].title,'Fix "auth" flow')
+eq(sessions.from_decoded({}),nil)
+
 -- Same pane, different non-empty session in the same cwd is OMP /new.
 eq(sessions.new_session({session="A",cwd="/p",title="x"},{session="B",cwd="/p",title="x"}),true)
 eq(sessions.new_session({session="A",cwd="/p"},{session="A",cwd="/p"}),false)

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+- Fix agent cards stuck on "loading" (one re-reading pane starved the rest) and show an idle agent's last real steps when its newest turn used no tools.
+- Keep window callbacks under Tern's 50 ms budget: render on its own tick, native JSON for `tern inspect`, sidebar updates go to the visible tab first.
+- Subagent dropdown opens and closes correctly; notifications only while Tern is in the background.
+
 ## 0.1.0 (initial release)
 
 - Workspace and agent sidebar for Tern: workspaces with tabs, agents with state labels, a pinned focused workspace tab, instant subagent disclosure, keyboard shortcuts.

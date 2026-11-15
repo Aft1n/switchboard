@@ -17,9 +17,17 @@ local PROVIDER_NAMES = {["openai-codex"]="Codex", anthropic="Claude", ["google-a
 local PROVIDER_LOGOS = {anthropic="provider-anthropic", ["openai-codex"]="provider-openai", ["google-antigravity"]="provider-google"}
 local ACTIVITY_LABELS = {loading="Loading activity…", unavailable="Activity unavailable", unreported="Activity not reported", no_tools="No tool steps yet", terminal="Terminal agent"}
 local SUBAGENT_STATES = {working=true, waiting_input=true, idle=true, done=true, failed=true, closed=true}
--- Unreserved URI characters pass through; the rest become %XX in agent ids and SVG data URIs.
+local encoded_cache, encoded_count = {}, 0
+-- Unreserved URI characters pass through; the rest become %XX. Bounded memo: the quota SVG repeats the same characters every tick.
 local function percent_encode(value)
-	return (string.gsub(tostring(value), "[^%w%-._~]", function(char) return string.format("%%%02X", string.byte(char)) end))
+	local key = tostring(value)
+	local hit = encoded_cache[key]
+	if hit then return hit end
+	local out = string.gsub(key, "[^%w%-._~]", function(char) return string.format("%%%02X", string.byte(char)) end)
+	if encoded_count >= 128 then encoded_cache, encoded_count = {}, 0 end
+	encoded_cache[key] = out
+	encoded_count += 1
+	return out
 end
 
 function M.render(ui, data, focused)
