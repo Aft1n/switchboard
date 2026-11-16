@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.5
+
+- Agent cards have a close x on hover that closes the agent's tab, like the x on workspace tab rows. Right-click "Close block" on the sidebar still closes the sidebar itself: Tern's menu names no row.
+
+## 0.1.4
+
+- Fix sessions that vanish or open wrong after a Tern budget pause: while the timer hook is paused (up to 5 min), clicks and new tabs repaint the sidebar from the click or event itself instead of waiting on a timer, and a pending focus retry no longer fires minutes late.
+- A resync no longer serves the tree built for a background tab's prewarm.
+- Sidebar cards carry their slot key, so incremental patches match (every card change used to fall back to a full resync). A patch only goes to a pane that saw the previous render; quota changes send the full tree.
+- A repaint with nothing changed builds no `tern.ui` nodes and reuses the encoded tree. Each `tern.ui` call took 1-100 ms live, so the 2 s heartbeat render ran 40-400 ms and tripped Tern's 50 ms timer budget.
+- Steps over 40 ms are logged as `switchboard: slow <step>` in tern.log.
+
 ## 0.1.3
 
 - Sidebar updates are incremental: a block gets only the cards that changed (a few KB) with a full-tree resync fallback, and only the visible tab's sidebar is kept in sync.

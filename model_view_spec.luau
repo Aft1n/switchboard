@@ -166,7 +166,7 @@ eq(actions["restore"], true)
 eq(actions["new-workspace"], true)
 local visible_tab_rows=class_nodes(tree,"cp-tab-row")
 eq(#visible_tab_rows,1)
-eq(visible_tab_rows[1].props.key,"tab-row10")
+eq(visible_tab_rows[1].props.key,"tab:10")
 eq(#visible_tab_rows[1].children,2)
 eq(visible_tab_rows[1].children[2].props.title,"Close tab")
 eq(visible_tab_rows[1].children[2].props.aria,"Close Fix auth")
@@ -271,7 +271,7 @@ eq(values[1].props.text,"Updating…")
 print("stale quota readings do not show depletion alerts")
 
 eq(class_nodes(two_view,"cp-tab")[1].props.key,"tab10")
-eq(class_nodes(two_view,"cp-tab-row")[1].props.key,"tab-row10")
+eq(class_nodes(two_view,"cp-tab-row")[1].props.key,"tab:10")
 local original=data.projects[1].tabs[1]
 local oldPane=original.pane
 original.pane=999
@@ -279,7 +279,7 @@ local changedFocus=view.render(stub,data,999)
 original.pane=oldPane
 local focusTab=class_nodes(changedFocus,"cp-tab")[1]
 eq(focusTab.props.key,"tab" .. tostring(original.id))
-eq(class_nodes(changedFocus,"cp-tab-row")[1].props.key,"tab-row" .. tostring(original.id))
+eq(class_nodes(changedFocus,"cp-tab-row")[1].props.key,"tab:" .. tostring(original.id))
 print("workspace rows retain identity when their focused block changes")
 
 local finished_data={
@@ -499,4 +499,64 @@ local harness_tree=view.render(stub,harness_data,910)
 eq(#class_nodes(harness_tree,"cp-harness"),2)
 eq(#class_nodes(class_nodes(harness_tree,"cp-card-agent912")[1],"cp-harness"),0)
 print("harness agents show their icon before the title; omp rows do not")
+-- The sidebar block patches by key: every rebuilt slot must be the key of exactly one tree node.
+local slot_data=table.clone(child_data)
+slot_data.projects=data.projects
+slot_data.workspace_expanded={["1"]=true,["2"]=true}
+slot_data.closed={{session="s9",name="Old",project="api"}}
+local slot_cache=require("./render_cache").new(64)
+slot_cache.begin()
+local slot_tree=view.render(stub,slot_data,901,slot_cache)
+local keyed_nodes={}
+collect(slot_tree,function(node) return node.props~=nil and node.props.key~=nil end,keyed_nodes)
+local key_count={}
+for _,node in keyed_nodes do key_count[node.props.key]=(key_count[node.props.key] or 0)+1 end
+for _,slot in {"ws:1","ws:2","tab:10","tab:20","agent:901","closed:s9","summary:"} do eq(key_count[slot],1) end
+for _,slot in slot_cache.changed() do eq(key_count[slot],1) end
+print("cached cards carry their slot key, so sidebar patches match")
+-- Each tern.ui call costs milliseconds in Tern: a repaint with nothing changed must build no nodes,
+-- and any shell input that moves must still show.
+local calls=0
+local counting={
+ el=function(...) calls+=1; return stub.el(...) end,
+ node=function(...) calls+=1; return stub.node(...) end,
+ button=function(...) calls+=1; return stub.button(...) end,
+}
+local memo_data=table.clone(slot_data)
+memo_data.host={id=1,kind="local",state="connected",name="Mac"}
+memo_data.shortcuts={{icon="plug",label="One"}}
+local memo_cache=require("./render_cache").new(64)
+memo_cache.begin()
+local memo_first,memo_sheet=view.render(counting,memo_data,901,memo_cache)
+assert(calls>0,"first render builds nodes")
+calls=0
+memo_cache.begin()
+local memo_again,memo_sheet_again=view.render(counting,memo_data,901,memo_cache)
+eq(calls,0)
+assert(memo_again==memo_first,"an unchanged repaint reuses the tree")
+eq(memo_sheet_again,memo_sheet)
+local memo_prev=memo_first
+local function shell_changes(label,mutate)
+ mutate()
+ memo_cache.begin()
+ local memo_tree=view.render(counting,memo_data,901,memo_cache)
+ assert(memo_tree~=memo_prev,label .. " must rebuild the shell")
+ memo_prev=memo_tree
+end
+shell_changes("host state",function() memo_data.host.state="offline" end)
+shell_changes("shortcuts",function() memo_data.shortcuts={{icon="plug",label="Two"}} end)
+shell_changes("quota state",function() memo_data.quota_state="Refreshing" end)
+shell_changes("section sizes",function() memo_data.section_sizes={0.3,0.7} end)
+shell_changes("closed list hidden",function() memo_data.sidebar_settings={closed=false} end)
+shell_changes("agent gone",function() memo_data.agents={} end)
+print("an unchanged repaint builds no nodes; changed shell inputs still rebuild")
+-- Agent cards close their tab with a sibling x, never a button nested in the card button.
+local close_nodes={}
+collect(slot_tree,function(node) return node.props~=nil and node.props.actions~=nil and node.props.actions.click=="close-agent:901" end,close_nodes)
+eq(#close_nodes,1)
+local agent_rows=class_nodes(slot_tree,"cp-agent-row")
+eq(#agent_rows,1)
+eq(#class_nodes(class_nodes(agent_rows[1],"cp-card-agent901")[1],"cp-agent-row"),0)
+eq(#class_nodes(class_nodes(agent_rows[1],"cp-card-agent901")[1],"cp-agent-parent-row"),0)
+print("agent cards carry a sibling close button")
 return true

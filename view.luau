@@ -74,12 +74,22 @@ local function subagents_key(rows)
 	return table.concat(out, SEP)
 end
 
+-- Slot keys in build order, so the shell memo notices a card that appeared, vanished or moved.
+local slot_order = {}
+-- The last whole tree per cache, reused while no card rebuilt and no shell input changed.
+local root_memos = setmetatable({}, {__mode = "k"})
+
 local function cached(cache, key, signature, build)
-	if cache then return cache.get(key, signature, build) end
-	return build()
+	slot_order[#slot_order + 1] = key
+	local node = if cache then cache.get(key, signature, build) else build()
+	-- The slot key is the node key: the sidebar block patches a card in place by it. Quota
+	-- clusters are plain tables, not nodes, and cannot be patched.
+	if type(node.p) == "table" then node.p.key = key end
+	return node
 end
 
 function M.render(ui, data, focused, cache)
+	slot_order = {}
 	local settings = data.sidebar_settings or {}
 	local show_closed = settings.closed ~= false
 	local show_steps = settings.steps ~= false
@@ -287,7 +297,17 @@ function M.render(ui, data, focused, cache)
 		agent.p.key="agent" .. pane_key
 		agent.p.aria = a.name .. " · " .. state_label .. (if a.host then " · " .. a.host.kind .. " · " .. a.host.name else "")
 		agent.p.attrs = {["aria-pressed"]=if a.pane == focused then "true" else "false"}
-		if #subagents == 0 then return agent end
+		-- Same pattern as a workspace tab row: a sibling x (never nested in the card button) that closes the agent's tab.
+		local function with_close(card)
+			local close = ui.button("", {
+				icon="x", title="Close tab", aria="Close " .. a.name,
+				role="switchboard.agent-close", variant="quiet", size="sm",
+				actions={click="close-agent:" .. pane_key},
+			})
+			close.p.key = "close-agent" .. pane_key
+			return ui.el("div", {class="cp-agent-row"}, {card, close})
+		end
+		if #subagents == 0 then return with_close(agent) end
 
 		local parent_pane = pane_key
 		local expanded = data.subagents_expanded and data.subagents_expanded[parent_pane] == true
@@ -343,7 +363,7 @@ function M.render(ui, data, focused, cache)
 			end
 			table.insert(branch_children, ui.el("div", {class="cp-subagents", key="subagents" .. parent_pane}, child_cards))
 		end
-		return ui.el("div", {class="cp-agent-parent-row", key="agent-row" .. parent_pane}, {agent, ui.el("div", {class="cp-subagent-branch", key="subagent-branch" .. parent_pane}, branch_children)})
+		return with_close(ui.el("div", {class="cp-agent-parent-row", key="agent-row" .. parent_pane}, {agent, ui.el("div", {class="cp-subagent-branch", key="subagent-branch" .. parent_pane}, branch_children)}))
 		end)
 	end
 	for _, a in data.agents do table.insert(agents,render_agent(a)) end
@@ -367,9 +387,6 @@ function M.render(ui, data, focused, cache)
 				}),
 				el("div", "cp-agent-bottom", detail),
 			}, nil, if resumable then "resume-session:" .. entry.session else nil)
-			-- Stable identity so the shell fingerprint (and with it the patch path) survives
-			-- other cards opening or closing.
-			node.p.key = "closed:" .. closed_key
 			node.p.title = entry.name .. (if entry.cwd and entry.cwd ~= "" then "\n" .. entry.cwd else "") .. (if resumable then "\n· Click to reopen session" else "")
 			if resumable then node.p.aria = entry.name .. " · Click to reopen session" end
 			return node
@@ -377,50 +394,18 @@ function M.render(ui, data, focused, cache)
 		table.insert(agents, card)
 	end
 	if #agents == 0 then table.insert(agents, el("p", "cp-empty", nil, "No agents detected\nAgents appear here when opened in Tern.")) end
-	local tools = {text("cp-count",tostring(#data.agents))}
-	if #closed > 0 then
-		-- Tern ships no broom icon; cp-broom-icon draws one in CSS.
-		local broom = el("button", "cp-broom", {el("span", "cp-broom-icon")}, nil, "clear-history")
-		broom.p.title = "Clear closed agents"
-		broom.p.attrs = {["aria-label"]="Clear closed agents"}
-		table.insert(tools, broom)
-	end
-	table.insert(tools, ui.button("",{icon="bell",title="Tern needs you",aria="Tern needs you",variant="quiet",size="sm",actions={click="inbox"}}))
 	-- The counts change with almost every agent transition; memoizing them keeps the shell
 	-- fingerprint stable so those transitions travel as a small card patch instead of a full tree.
 	local summary = cached(cache, "summary:", tostring(data.running) .. "/" .. tostring(data.waiting), function()
 		return el("div", "cp-summary", {text("cp-live", tostring(data.running) .. " running"),
 			text("cp-waiting-count", tostring(data.waiting) .. " need input")})
 	end)
-	local agents_section = {
-		el("div", "cp-heading", {text("", "Agents"), el("div","cp-agent-header-tools",tools)}),
-		summary,
-		el("div", "cp-agents", agents),
-	}
-	local launchers = {}
-	for i, shortcut in data.shortcuts or {} do
-		table.insert(launchers, ui.button("", {
-			icon=if shortcut.icon and shortcut.icon ~= "" then shortcut.icon else "plug", title=shortcut.label, aria=shortcut.label,
-			variant="quiet",size="sm",actions={click="launch:" .. i},
-		}))
-	end
-	table.insert(launchers, ui.button("", {icon="plus",title="Add or remove plugin shortcuts",aria="Add or remove plugin shortcuts",variant="quiet",size="sm",actions={click="edit-shortcuts"}}))
 	local providers, provider_order = {}, {}
 	for _, q in (if show_quotas then data.quotas or {} else {}) do
 		if not providers[q.provider] then providers[q.provider]={}; table.insert(provider_order,q.provider) end
 		table.insert(providers[q.provider],q)
 	end
 	table.sort(provider_order)
-	local host_nodes = {}
-	if data.host then
-		local h = data.host
-		local host = ui.el("button",{class="cp-host",title="Switch Tern host · " .. h.name .. ". Running tasks stay on their original host.",
-			attrs={["aria-label"]="Switch host: " .. h.name},actions={click="switch-host"}}, {
-			text("cp-host-dot" .. (if h.state == "connected" then " cp-host-connected" else ""),"●"),
-			text("cp-host-kind",if h.kind == "local" then "LOCAL" else "VPS"),icon("chev-r","cp-host-chevron"),
-		})
-		table.insert(host_nodes,host)
-	end
 	local quota_nodes, quota_sheets, quota_popovers = {}, {}, {}
 	for provider_index, provider in provider_order do
 		local limits = providers[provider]
@@ -478,8 +463,53 @@ function M.render(ui, data, focused, cache)
 		table.insert(quota_sheets,cluster.hover)
 	end
 
+	-- Every tern.ui call costs milliseconds in Tern, and the shell is ~40 of them: when no card rebuilt and
+	-- no shell input moved, the last tree is still exact, so the 2 s heartbeat repaint builds nothing.
+	local shortcut_sig = {}
+	for _, shortcut in data.shortcuts or {} do shortcut_sig[#shortcut_sig + 1] = join(shortcut.icon, shortcut.label) end
+	local h, sizes = data.host, section_sizes.read(data.section_sizes)
+	local root_sig = join(
+		data.sidebar_pane, data.sidebar_host, data.workspace_lift, data.quota_state,
+		show_closed, show_steps, show_hosts, show_quotas, #shown, #data.agents, #closed,
+		h and join(h.id, h.kind, h.state, h.name) or "-", sizes[1], sizes[2],
+		table.concat(shortcut_sig, SEP), table.concat(slot_order, SEP)
+	)
+	local memo = cache and root_memos[cache]
+	if memo and memo.sig == root_sig and #cache.changed() == 0 then return memo.tree, memo.sheet end
+	local tools = {text("cp-count",tostring(#data.agents))}
+	if #closed > 0 then
+		-- Tern ships no broom icon; cp-broom-icon draws one in CSS.
+		local broom = el("button", "cp-broom", {el("span", "cp-broom-icon")}, nil, "clear-history")
+		broom.p.title = "Clear closed agents"
+		broom.p.attrs = {["aria-label"]="Clear closed agents"}
+		table.insert(tools, broom)
+	end
+	table.insert(tools, ui.button("",{icon="bell",title="Tern needs you",aria="Tern needs you",variant="quiet",size="sm",actions={click="inbox"}}))
+	local agents_section = {
+		el("div", "cp-heading", {text("", "Agents"), el("div","cp-agent-header-tools",tools)}),
+		summary,
+		el("div", "cp-agents", agents),
+	}
+	local launchers = {}
+	for i, shortcut in data.shortcuts or {} do
+		table.insert(launchers, ui.button("", {
+			icon=if shortcut.icon and shortcut.icon ~= "" then shortcut.icon else "plug", title=shortcut.label, aria=shortcut.label,
+			variant="quiet",size="sm",actions={click="launch:" .. i},
+		}))
+	end
+	table.insert(launchers, ui.button("", {icon="plus",title="Add or remove plugin shortcuts",aria="Add or remove plugin shortcuts",variant="quiet",size="sm",actions={click="edit-shortcuts"}}))
+	local host_nodes = {}
+	if data.host then
+		local h = data.host
+		local host = ui.el("button",{class="cp-host",title="Switch Tern host · " .. h.name .. ". Running tasks stay on their original host.",
+			attrs={["aria-label"]="Switch host: " .. h.name},actions={click="switch-host"}}, {
+			text("cp-host-dot" .. (if h.state == "connected" then " cp-host-connected" else ""),"●"),
+			text("cp-host-kind",if h.kind == "local" then "LOCAL" else "VPS"),icon("chev-r","cp-host-chevron"),
+		})
+		table.insert(host_nodes,host)
+	end
 	if show_quotas and data.quota_state then table.insert(quota_nodes,text("cp-quota-state",data.quota_state)) end
-	return el("div", "switchboard", {
+	local tree = el("div", "switchboard", {
 		el("div", "cp-brand", {el("span","cp-switchboard-mark"), text("cp-brand-name", "Switchboard"),
 			el("div","cp-hosts",host_nodes),
 			el("button", "cp-tool", nil, "+", "new-workspace")}),
@@ -505,7 +535,10 @@ function M.render(ui, data, focused, cache)
 			}),
 		}),
 		el("div","cp-quota-popovers",quota_popovers),
-	},nil,"keep-focus"), table.concat(quota_sheets,"\n")
+	},nil,"keep-focus")
+	local sheet = table.concat(quota_sheets,"\n")
+	if cache then root_memos[cache] = {sig=root_sig, tree=tree, sheet=sheet} end
+	return tree, sheet
 end
 
 return M

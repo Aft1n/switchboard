@@ -94,6 +94,19 @@ local project_colors_store=tern.kv.get("project_colors") or {next=1,colors={}}
 tern.css("project-colors", project_colors.css())
 local refresh
 local refresh_due, refresh_at = false, -math.huge
+-- Tern pauses the whole timer hook for 5 s..5 min after one callback runs over 50 ms; user paths must not wait on it.
+local timer_paused = false
+-- A card patch is only valid for a sidebar pane that saw the previous render: `synced` holds the render each pane last matched.
+local render_seq, synced = 0, {}
+-- An unchanged tree comes back as the same table; its JSON is reused instead of encoded again.
+local last_tree, last_signature = nil, nil
+-- Names the step that ran long. Tern pauses the whole timer hook when one callback passes 50 ms and its log
+-- never says which; this logs a step over 40 ms (wall time, native calls included) and returns the new lap start.
+local function lap(name, from)
+	local now = tern.now()
+	if now - from >= 40 then tern.log.warn("switchboard: slow " .. name .. " " .. tostring(now - from) .. " ms") end
+	return now
+end
 local rendered_key, rendered_at = nil, -math.huge
 -- Unchanged cards keep their node across renders; 256 covers a big session's cards and tabs.
 local subtree_cache = render_cache.new(256)
@@ -1093,6 +1106,7 @@ local function render(cx, infos, reveal_target, visible_only)
 	local highlight = reveal_target or reveal_intent or selected_content or selected
 	reveal_intent = nil
 	subtree_cache.begin()
+	render_seq += 1
 	local tree, sheet = view.render(tern.ui, data, highlight, subtree_cache)
 	-- Tern clears plugin sheets on a style reload while the window VM keeps running, so
 	-- keep re-asserting them, but only when the sheet changed or after a minute: applying
@@ -1101,8 +1115,10 @@ local function render(cx, infos, reveal_target, visible_only)
 		tern.css("quota-arcs", sheet)
 		arcs_sheet, arcs_at = sheet, tern.now()
 	end
-	local signature = tern.json.encode(tree)
-	sidebar_snapshot=signature
+	local signature = if tree == last_tree then last_signature else tern.json.encode(tree)
+	last_tree, last_signature = tree, signature
+	-- A prewarm render carries another tab's highlight; a resync must never serve it.
+	if not reveal_target then sidebar_snapshot=signature end
 	-- Every tab's sidebar shows the same global data. Updating only the focused
 	-- tab's pane left a restored or reloaded visible sidebar on an old tree, so its
 	-- row actions (lift/drop) never changed.
@@ -1123,14 +1139,14 @@ local function render(cx, infos, reveal_target, visible_only)
 			local p=node.p
 			if type(p)=="table" and type(p.key)=="string" then
 				local key=p.key
-				if string.sub(key,1,3)=="ws:" or string.sub(key,1,4)=="tab:" or string.sub(key,1,6)=="agent:" or string.sub(key,1,7)=="closed:" or string.sub(key,1,6)=="quota:" then
+				if string.sub(key,1,3)=="ws:" or string.sub(key,1,4)=="tab:" or string.sub(key,1,6)=="agent:" or string.sub(key,1,7)=="closed:" then
 					keys[#keys+1]=key
 				end
 			end
 			for _,c in node.c or {} do walk(c) end
 		end
 		walk(tree)
-		local flags={tostring(data.workspace_lift), tostring(data.sidebar_host), tostring(data.quota_state)}
+		local flags={tostring(data.workspace_lift), tostring(data.sidebar_host), tostring(data.quota_state), tostring(data.host and data.host.name)..tostring(data.host and data.host.state)}
 		for name, on in data.workspace_expanded or {} do if on then flags[#flags+1]=name end end
 		for name, on in data.sidebar_settings or {} do flags[#flags+1]=name.."="..tostring(on) end
 		for _,name in data.workspace_view or {} do flags[#flags+1]=name end
@@ -1138,6 +1154,9 @@ local function render(cx, infos, reveal_target, visible_only)
 		return structure
 	end
 	local changes=subtree_cache.changed()
+	-- Quota clusters are not tree nodes, so a patch cannot carry them; too many slots is cheaper as a full tree.
+	local patchable=#changes>0 and #changes<=24
+	for _,key in changes do if string.sub(key,1,6)=="quota:" then patchable=false; break end end
 	local function push(pane)
 		pushed_at[pane]=tern.now()
 		if is_canvas[pane] then
@@ -1147,7 +1166,7 @@ local function render(cx, infos, reveal_target, visible_only)
 		end
 		-- A small patch when only cards changed; the full tree when the shell changed, nothing
 		-- changed, or too many slots did.
-		if last_structure[pane]==get_structure() and #changes>0 and #changes<=24 and last[pane]~=signature then
+		if patchable and synced[pane]==render_seq-1 and last_structure[pane]==get_structure() and last[pane]~=signature then
 			local slots={}
 			for _,key in changes do slots[key]=subtree_cache.node(key) end
 			local value=tern.json.encode({slots=slots})
@@ -1176,6 +1195,7 @@ local function render(cx, infos, reveal_target, visible_only)
 			table.insert(stale,pane)
 		end
 	end
+	for pane in owned do if last[pane]==signature then synced[pane]=render_seq end end
 	-- Background sidebars are left stale on purpose: each push costs a big JSON decode and a
 	-- full tree diff in that block's own VM, and the next time its tab is shown the render that
 	-- focuses it pushes the current tree before it is seen.
@@ -1363,10 +1383,14 @@ end
 -- Repaints now. User actions use this: a deferred render waits behind the timer hook, which a budget
 -- pause holds, so the old highlight would stay on screen.
 local function present_now(cx)
+	local t = tern.now()
 	local infos = all_infos(cx)
+	t = lap("present all_infos", t)
 	local fresh = sample(cx, infos, false)
+	t = lap("present sample", t)
 	last_infos = infos
 	local ok, err = pcall(render, cx, infos)
+	lap("present render", t)
 	if not ok then tern.log.warn("switchboard render failed: " .. tostring(err)); return end
 	-- render() reconciles selected_content with the true focus; key it afterwards so the
 	-- gate reflects the tree that was actually pushed.
@@ -1395,7 +1419,9 @@ local function render_background(cx, infos)
 	local now = tern.now()
 	if key == rendered_key and now - rendered_at < 2000 then return end
 	if key ~= rendered_key then tern.log.debug("switchboard: content changed, repainting") end
+	local from = tern.now()
 	local ok, err = pcall(render, cx, infos)
+	lap("background render", from)
 	if not ok then tern.log.warn("switchboard render failed: " .. tostring(err)); return end
 	rendered_key, rendered_at = screen_key(cx, infos), now
 end
@@ -1403,13 +1429,20 @@ end
 -- Background pass in three ticks, so no callback stacks placement, sampling and rendering.
 local function background_refresh(cx)
 	guarded(cx, function()
-		if not structure_pass(cx, false) then return end
+		local from = tern.now()
+		local passed = structure_pass(cx, false)
+		lap("structure_pass", from)
+		if not passed then return end
 		tern.timer(0, function(sampleCx)
 			if not sampleCx then return end
 			guarded(sampleCx, function()
+				local t = tern.now()
 				prewarm_next(sampleCx)
+				t = lap("prewarm_next", t)
 				local infos = all_infos(sampleCx)
+				t = lap("background all_infos", t)
 				local fresh = sample(sampleCx, infos, false)
+				lap("background sample", t)
 				last_infos = infos
 				-- The render tick below follows the read tick, so a new card paints with content.
 				if fresh > 0 then
@@ -1524,20 +1557,24 @@ local function navigate(cx,requested,later)
 		selected_content=nil
 		-- A session switch can apply on the next frame, so the first focus attempt may be too
 		-- early. Retry once, then confirm the selection from where the focus actually is.
-		tern.timer(0, function(nextCx)
-			if not nextCx or not nextCx.session:pane(requested) then return end
-			local want=nextCx.session:tab_of(requested)
-			if want then
-				for _,row in nextCx.session:tabs() do
-					if row.id==want and row.session~=nextCx.sessions:current().id then nextCx.sessions:switch(row.session);break end
+		-- Paused: the retry would run minutes late and steal focus from a newer selection; the
+		-- repaint below shows the real focus and a late-landing focus event repaints again.
+		if not timer_paused then
+			tern.timer(0, function(nextCx)
+				if not nextCx or not nextCx.session:pane(requested) then return end
+				local want=nextCx.session:tab_of(requested)
+				if want then
+					for _,row in nextCx.session:tabs() do
+						if row.id==want and row.session~=nextCx.sessions:current().id then nextCx.sessions:switch(row.session);break end
+					end
 				end
-			end
-			nextCx.layout:focus(requested)
-			local ok=nextCx.session:focused()==requested
-			if ok then selected_content=requested end
-			confirm_select(nextCx, nextCx.session:focused() or requested)
-			if enabled and ready and not changing then refresh(nextCx) end
-		end)
+				nextCx.layout:focus(requested)
+				local ok=nextCx.session:focused()==requested
+				if ok then selected_content=requested end
+				confirm_select(nextCx, nextCx.session:focused() or requested)
+				if enabled and ready and not changing then refresh(nextCx) end
+			end)
+		end
 	else
 		confirm_select(cx, requested)
 	end
@@ -1548,7 +1585,7 @@ local function navigate(cx,requested,later)
 		-- leave the previous card selected.
 		reveal_intent=nil
 		rendered_at=tern.now()
-	elseif later then
+	elseif later and not timer_paused then
 		tern.timer(0,function(nextCx)
 			if nextCx and enabled and ready then refresh(nextCx) end
 		end)
@@ -1720,6 +1757,12 @@ end)
 -- Closing a tab's last content pane leaves its sidebar alone at full width until the close event
 -- is handled. Move to the next target first, then close the pane and its sidebar out of sight.
 -- Busy panes fall through to Tern's own close so its confirmation still applies.
+local function close_tab_row(cx,tab)
+	local shape=cx.session:layout(tab)
+	local target=shape and placement.first(model.clean_layout(shape.root,owned))
+	if target and navigate(cx,target) and cx.session:tab_of(cx.session:focused())==tab then cx:command("close_tab") end
+end
+
 local function close_last_pane(cx)
 	local pane=cx.session:focused()
 	local tab=pane and not owned[pane] and cx.session:tab_of(pane)
@@ -1894,9 +1937,13 @@ local function sidebar_action(ev, cx)
 	if ev.act=="shortcuts" then shortcut_guide(cx);return true end
 	local close_tab=tonumber(string.match(ev.act,"^close%-tab:(%d+)$"))
 	if close_tab then
-		local shape=cx.session:layout(close_tab)
-		local target=shape and placement.first(model.clean_layout(shape.root,owned))
-		if target and navigate(cx,target) and cx.session:tab_of(cx.session:focused())==close_tab then cx:command("close_tab") end
+		close_tab_row(cx,close_tab)
+		return true
+	end
+	local close_agent=tonumber(string.match(ev.act,"^close%-agent:(%d+)$"))
+	if close_agent then
+		local tab=cx.session:tab_of(close_agent)
+		if tab then close_tab_row(cx,tab) else cx:toast("info","Agent is no longer open"); refresh(cx) end
 		return true
 	end
 	if ev.act == "keep-focus" then return true end
@@ -2248,6 +2295,9 @@ for _, event in {"focus", "pane_created", "pane_closed", "tab_created", "tab_clo
 				present_now(cx)
 			end
 		end
+		-- A paused timer hook never runs the dirty-flag poll, so new tabs and agents would stay
+		-- invisible until the next click: repaint from the event itself, at most twice a second.
+		if timer_paused and enabled and ready and not changing and tern.now()-rendered_at>500 then refresh(cx) end
 		-- Keep the timer handle rooted in a recurring registered hook.
 		if clock then refresh_due = true end
 	end)
@@ -2260,11 +2310,14 @@ local function refresh_if_due(cx)
 end
 -- A paused timer hook skips every poll. On resume the next poll refreshes once, so the sidebar catches up.
 tern.on("budget", function(ev)
-	if ev.hook == "timer" and ev.state == "resumed" then refresh_due = true end
+	if ev.hook ~= "timer" then return end
+	timer_paused = ev.state == "paused"
+	if ev.state == "resumed" then refresh_due = true end
 end)
 
 local function poll(cx)
  clock = tern.timer(1500, poll)
+ local t = tern.now()
  -- Re-assert the layout sheet occasionally, not every tick: a style write on an unchanged
  -- sheet recalculates the whole window.
  if enabled then apply_navigation(false) end
@@ -2273,18 +2326,23 @@ local function poll(cx)
 		discover(cx)
 		if next(owned)~=nil then enabled=true;tern.kv.set("enabled",true) end
 	end
+	t = lap("poll prelude", t)
 	if cx and enabled then
 		local focus=cx.session:focused()
 		local tab=focus and cx.session:tab_of(focus)
 		local content=false
 		if focus and owned[focus] and tab then
 			for _,pane in cx.session:panes() do if pane.tab==tab and not owned[pane.pane] then content=true;break end end
+			t = lap("poll pane scan", t)
 			if not content then closed_tabs_to_check[tab]=true;jump_after_close(cx) else refresh_if_due(cx) end
 		else refresh_if_due(cx) end
+		t = lap("poll refresh", t)
 		read_usage(cx)
+		t = lap("read_usage", t)
 		scan_terminals()
+		t = lap("scan_terminals", t)
 		read_native_subagents(cx)
-
+		lap("read_native_subagents", t)
 	end
 end
 local function activity_gap()
@@ -2295,13 +2353,19 @@ local function activity_gap()
 end
 local function poll_activity(cx)
 	if cx and enabled then
+		local t=tern.now()
 		local infos=all_infos(cx)
+		t=lap("activity all_infos",t)
 		read_terminal_screens(cx, infos)
+		t=lap("read_terminal_screens",t)
 		sample(cx, infos, false)
+		lap("activity sample",t)
 		-- Transcript reads run on a tick of their own, so one callback never does two of them.
 		tern.timer(0, function(readCx)
 			if not readCx then return end
+			local from=tern.now()
 			sample(readCx, infos, true)
+			lap("transcript sample",from)
 			-- First sight has no snapshot yet: its extra read gets a tick of its own.
 			for _, record in activity do
 				if record.read_at == -math.huge then

@@ -95,13 +95,13 @@ h.suite("view subtree cache", function(s)
 				progress = {steps = {{label = "First step", status = "running"}}},
 			}},
 		}
-		local first = find(view.render(ui, data, 7, cache), "agent7")
+		local first = find(view.render(ui, data, 7, cache), "agent:7")
 		s.ok(first ~= nil, "missing agent card")
-		local again = find(view.render(ui, data, 7, cache), "agent7")
+		local again = find(view.render(ui, data, 7, cache), "agent:7")
 		s.ok(again == first, "unchanged card should reuse its node")
 
 		data.agents[1].progress.steps[1].label = "Renamed step"
-		local changed = find(view.render(ui, data, 7, cache), "agent7")
+		local changed = find(view.render(ui, data, 7, cache), "agent:7")
 		s.ok(changed ~= first, "changed step label should rebuild the card")
 		s.ok(has_text(changed, "Renamed step"), "the rebuilt card carries the new label")
 	end)
