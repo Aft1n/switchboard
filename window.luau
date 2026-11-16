@@ -1,10 +1,18 @@
 local rendered_host
+local arcs_sheet, arcs_at = nil, -math.huge
+local last_structure = {}
+local nav_at = -math.huge
+-- Pane the user just clicked: its card stays highlighted for the one render that follows the
+-- navigation, even if Tern reports focus on another pane of that tab by then.
+local reveal_intent
+local apply_navigation
 local model = require("./model")
 local keyboard = require("./keyboard")
 local close_target = require("./close_target")
 local agent_state = require("./agent_state")
 local placement = require("./placement")
 local view = require("./view")
+local render_cache = require("./render_cache")
 local progress = require("./progress")
 local usage = require("./usage")
 local subagents = require("./subagents")
@@ -42,7 +50,6 @@ local sidebar_route
 local changing = false
 local ready = false
 local clock
-local live_clock
 local activity_clock
 local close_check
 local activity = {}
@@ -87,6 +94,9 @@ local project_colors_store=tern.kv.get("project_colors") or {next=1,colors={}}
 tern.css("project-colors", project_colors.css())
 local refresh
 local refresh_due, refresh_at = false, -math.huge
+local rendered_key, rendered_at = nil, -math.huge
+-- Unchanged cards keep their node across renders; 256 covers a big session's cards and tabs.
+local subtree_cache = render_cache.new(256)
 local isolation_from_path
 local workspace_recency=require("./workspace_recency")
 local vibe=require("./vibe")
@@ -110,7 +120,6 @@ local workspace_lift, workspace_view
 local workspace_tab_counts={}
 local stamped_session
 local closing_native_tabs={}
-local navigation_intent
 local focused_by_tab = {}
 local sidebar_share = tonumber(tern.kv.get("native_sidebar_share")) or 0.20
 local workspace_expanded = tern.kv.get("workspace_expanded") or {}
@@ -163,6 +172,8 @@ local function sample(cx, infos, read)
 	local by_pane = {}
 	local focused = cx.session:focused()
 	local changed=false
+	local content=false
+	local fresh_count=0
 	for _, info in infos do by_pane[info.pane] = info end
 	-- Another window may have ordered panes since this one last read.
 	recency=tern.kv.get("agent_recency") or recency
@@ -173,6 +184,8 @@ local function sample(cx, infos, read)
 		if fresh then
 			record = {state=info.state, read_at=-math.huge, dirty=true, updated_at=now, snapshot={steps={}},subagents=subagents.clean(subagent_rows[string.format("%.0f",info.pane)] or {},wall)}
 			activity[info.pane] = record
+			fresh_count+=1
+			content = true
 			local key=string.format("%.0f",info.pane)
 			record.recent_order=recency.panes[key]
 			if not record.recent_order then
@@ -184,8 +197,11 @@ local function sample(cx, infos, read)
 		end
 		if record.state ~= info.state then
 			-- A real transition (working, waiting, finished) moves the row up; first
-			-- sight already ordered it and transcript polls never bump.
-			if not fresh then
+			-- sight already ordered it and transcript polls never bump. Focusing can
+			-- flip a pane's state through the focused native-view reconcile, so never
+			-- reorder on the pane that just gained or lost focus.
+			content = true
+			if not fresh and not (focused == info.pane or record.was_focused) then
 				recency.next+=1
 				local key=string.format("%.0f",info.pane)
 				recency.panes[key]=recency.next
@@ -204,6 +220,7 @@ local function sample(cx, infos, read)
 		end
 		record.last_seen = now
 		record.state = info.state
+		record.was_focused = focused == info.pane
 	if info.synthetic then record.read_at, record.dirty, record.synthetic = now, false, true end
 	end
 	for pane in activity do
@@ -211,10 +228,14 @@ local function sample(cx, infos, read)
 	end
 	for pane in vibe_state do if not activity[pane] then vibe_state[pane] = nil end end
 	if changed then tern.kv.set("agent_recency",recency) end
-	if not read then return end
+	if content then refresh_due = true end
+	if not read then return fresh_count end
 	local pick=progress.next_read(activity,now,focused)
 	if pick then
 		local record = activity[pick]
+		-- The loading label disappears on the first read even when the snapshot stays empty.
+		local first_read = record.read_at == -math.huge
+		local was_unavailable, was_empty = record.unavailable, record.empty_transcript
 		local ok, messages = pcall(function()
 			return cx.agents:transcript(pick, {last=60})
 		end)
@@ -230,6 +251,7 @@ local function sample(cx, infos, read)
 			if tern.json.encode(children)~=tern.json.encode(record.subagents) then
 			 subagent_rows[string.format("%.0f",pick)]=children
 			 tern.kv.set("subagent_rows",subagent_rows)
+			 content = true
 			end
 			record.subagents=children
 			record.empty_transcript=type(messages)~="table" or #messages==0
@@ -252,6 +274,7 @@ local function sample(cx, infos, read)
 			end
 			if record.read_at ~= -math.huge and tern.json.encode(snapshot) ~= tern.json.encode(record.snapshot) then
 				record.updated_at=now
+				content = true
 			end
 			record.snapshot = snapshot
 			if record.empty_transcript and #(snapshot.steps or {})==0
@@ -270,12 +293,26 @@ local function sample(cx, infos, read)
 		end
 		record.unavailable = not ok
 		record.read_at, record.dirty = now, false
+		if first_read or was_unavailable ~= record.unavailable or was_empty ~= record.empty_transcript then content = true end
 	end
+	if content then refresh_due = true end
+	return fresh_count
+end
+
+-- Host listing, reused for a second while the current host stays the same. Host switches invalidate it.
+local hosts_cache, hosts_cache_at, hosts_cache_current = {}, -math.huge, nil
+local function hosts_list(cx)
+	local current = cx.hosts:current().id
+	local now = tern.now()
+	if current ~= hosts_cache_current or now - hosts_cache_at >= 1000 then
+		hosts_cache, hosts_cache_at, hosts_cache_current = cx.hosts:list(), now, current
+	end
+	return hosts_cache
 end
 
 -- Owning host of a pane ("panes") or session ("sessions"); nil when unknown.
 local function host_of(cx,field,id)
-	for _, host in cx.hosts:list() do
+	for _, host in hosts_list(cx) do
 		for _, item in host[field] or {} do if item == id then return host end end
 	end
 	return nil
@@ -304,7 +341,7 @@ local function all_infos(cx)
 	for _, info in infos do omp[info.pane] = true end
 	local next_remote, live = {}, {}
 	local host_of_pane = {}
-	for _, host in cx.hosts:list() do
+	for _, host in hosts_list(cx) do
 		for _, id in host.panes or {} do host_of_pane[id] = host_of_pane[id] or host end
 	end
 	for _, pane in cx.session:panes() do
@@ -360,7 +397,7 @@ end
 -- One process scan per 4 s finds harnesses in local panes (see terminal_agents.SCAN).
 local function scan_terminals()
 	local now = tern.now()
-	if terminal_scan.busy or now - terminal_scan.at < 4000 then return end
+	if terminal_scan.busy or now - terminal_scan.at < 10000 then return end
 	terminal_scan.at = now
 	terminal_scan.busy = true
 	local ok = pcall(tern.process.run, {"/bin/sh", "-c", terminal_agents.SCAN}, {timeout_ms = 5000}, function(result)
@@ -372,7 +409,7 @@ end
 
 -- Local-only checkout/worktree classification for agent cards. One ovnfs and
 -- one omp scan per 30 s; git checkout detection is cached per cwd.
-local ISOLATION_TTL = 60000
+local ISOLATION_TTL = 300000
 local isolation_scan = {at = -math.huge, checkouts = {}, worktrees = {}, busy = false}
 local isolation_git = {}
 
@@ -861,6 +898,43 @@ end
 local last_infos
 
 local pushed_at = {}
+
+-- A card's project is the folder its agent actually runs in, not the workspace's name: one
+-- Tern session can hold tabs from several folders (a hub3-nx tab inside a remintor session
+-- used to be labelled "remintor").
+local function path_segments(path)
+	local out = {}
+	for segment in string.gmatch(path or "", "[^/]+") do out[#out+1] = segment end
+	return out
+end
+local function common_root(paths)
+	local base = path_segments(paths[1])
+	local keep = #base
+	for i = 2, #paths do
+		local other = path_segments(paths[i])
+		local n = 0
+		while n < keep and n < #other and base[n+1] == other[n+1] do n += 1 end
+		keep = n
+	end
+	return "/" .. table.concat(base, "/", 1, keep)
+end
+local function under(parent, path)
+	return path == parent or string.sub(path, 1, #parent + 1) == parent .. "/"
+end
+-- The folder a pane belongs to: the workspace name while the pane sits in the workspace's own
+-- folder, else the first path segment below the deepest folder the session's panes share.
+local function project_name(path, root, workspace)
+	if type(path) ~= "string" or path == "" then return workspace end
+	if not root or root == "" then return workspace end
+	local base = string.match(root, "[^/]+$")
+	if under(root, path) then
+		if base and string.lower(base) == string.lower(workspace) then return workspace end
+		return (string.match(string.sub(path, #root + 2), "^[^/]+")) or workspace
+	end
+	local shared = common_root({root, path})
+	return (string.match(string.sub(path, #shared + 2), "^[^/]+")) or workspace
+end
+
 local function render(cx, infos, reveal_target, visible_only)
 	local tabs = cx.session:tabs()
 	local layouts = {}
@@ -870,7 +944,7 @@ local function render(cx, infos, reveal_target, visible_only)
 		local tab = cx.session:tab_of(actual_focus)
 		if tab then focused_by_tab[tab]=actual_focus end
 	end
-	local hosts_ok, hosts = pcall(function() return cx.hosts:list() end)
+	local hosts_ok, hosts = pcall(hosts_list, cx)
 	if not hosts_ok then hosts={} end
 	local panes=cx.session:panes()
 	local data = model.build(cx.session:sessions(), tabs, panes, infos, owned, activity, layouts, focused_by_tab, hosts)
@@ -882,6 +956,25 @@ local function render(cx, infos, reveal_target, visible_only)
 				if mapping and mapping.file then agent.isolation = isolation_from_session(cx, mapping.file) end
 			end
 		end
+	end
+	-- Session roots: the deepest folder every content pane of that session shares. Cards that
+	-- run elsewhere in the same workspace then name their own folder.
+	local tab_by_id={}
+	for _,tab in tabs do tab_by_id[tab.id]=tab end
+	local session_roots, roots_by_session = {}, {}
+	for _,pane in panes do
+		if not owned[pane.pane] and type(pane.cwd)=="string" and string.sub(pane.cwd,1,1)=="/" then
+			local tab=tab_by_id[pane.tab]
+			local session=tab and tab.session
+			if session then
+				local list=session_roots[session]
+				if list then table.insert(list,pane.cwd) else session_roots[session]={pane.cwd} end
+			end
+		end
+	end
+	for session,paths in session_roots do roots_by_session[session]=common_root(paths) end
+	for _,agent in data.agents do
+		agent.project=project_name(agent.cwd,roots_by_session[agent.project_id],agent.project)
 	end
 	visible_agents=data.agents
 	-- Re-read shared kv so a second window cannot clobber newer history.
@@ -990,11 +1083,24 @@ local function render(cx, infos, reveal_target, visible_only)
 	if colors_added then tern.kv.set("project_colors",project_colors_store) end
 	data.project_colors = project_colors_store.colors
 	local selected = cx.session:focused()
+	-- True focus wins for the highlight. A background prewarm render passes reveal_target
+	-- and must keep its deliberately selected content; everywhere else the visible content
+	-- pane is the truth, even if a navigation intent got stuck before focus landed.
+	if not reveal_target and not reveal_intent and selected and not owned[selected] then
+		selected_content = selected
+	end
 	if not selected_content and selected and not owned[selected] then selected_content=selected end
-	local tree, sheet = view.render(tern.ui, data, reveal_target or selected_content or selected)
-	-- Tern can clear a plugin's dynamic sheets during a style reload while the
-	-- window VM keeps running. Reapply the current arcs with every render.
-	tern.css("quota-arcs",sheet)
+	local highlight = reveal_target or reveal_intent or selected_content or selected
+	reveal_intent = nil
+	subtree_cache.begin()
+	local tree, sheet = view.render(tern.ui, data, highlight, subtree_cache)
+	-- Tern clears plugin sheets on a style reload while the window VM keeps running, so
+	-- keep re-asserting them, but only when the sheet changed or after a minute: applying
+	-- identical CSS forces a style recalculation over the whole window on every render.
+	if sheet ~= arcs_sheet or tern.now() - arcs_at > 60000 then
+		tern.css("quota-arcs", sheet)
+		arcs_sheet, arcs_at = sheet, tern.now()
+	end
 	local signature = tern.json.encode(tree)
 	sidebar_snapshot=signature
 	-- Every tab's sidebar shows the same global data. Updating only the focused
@@ -1002,42 +1108,86 @@ local function render(cx, infos, reveal_target, visible_only)
 	-- row actions (lift/drop) never changed.
 	-- A host switch remounts the other host's blocks; forget what they were sent so they get the tree again.
 	local host_id=cx.hosts:current().id
-	if host_id ~= rendered_host then for pane in owned do last[pane]=nil end end
+	if host_id ~= rendered_host then for pane in owned do last[pane]=nil; last_structure[pane]=nil end; apply_navigation(true) end
 	rendered_host=host_id
 	local force = tern.now() < force_until
+	-- Slot keys in tree order plus the fields that live outside the memoized cards: while
+	-- these hold, only the rebuilt cards need to travel to the block. Built lazily: a render
+	-- that pushes nothing never pays for it.
+	local structure
+	local function get_structure()
+		if structure then return structure end
+		local keys={}
+		local function walk(node)
+			if type(node)~="table" then return end
+			local p=node.p
+			if type(p)=="table" and type(p.key)=="string" then
+				local key=p.key
+				if string.sub(key,1,3)=="ws:" or string.sub(key,1,4)=="tab:" or string.sub(key,1,6)=="agent:" or string.sub(key,1,7)=="closed:" or string.sub(key,1,6)=="quota:" then
+					keys[#keys+1]=key
+				end
+			end
+			for _,c in node.c or {} do walk(c) end
+		end
+		walk(tree)
+		local flags={tostring(data.workspace_lift), tostring(data.sidebar_host), tostring(data.quota_state)}
+		for name, on in data.workspace_expanded or {} do if on then flags[#flags+1]=name end end
+		for name, on in data.sidebar_settings or {} do flags[#flags+1]=name.."="..tostring(on) end
+		for _,name in data.workspace_view or {} do flags[#flags+1]=name end
+		structure=table.concat(keys,"\n").."|"..table.concat(flags,"\n")
+		return structure
+	end
+	local changes=subtree_cache.changed()
 	local function push(pane)
 		pushed_at[pane]=tern.now()
 		if is_canvas[pane] then
 			local ok=pcall(cx.canvas.set,cx.canvas,pane,{view=tree})
-			if ok then last[pane] = signature end
-		else
-			-- A sidebar pane can outlive its program for a poll; one dead pane
-			-- must not abort the updates for every other sidebar.
-			local ok=pcall(function() cx.session:event(pane,{ev="action",act="switchboard.sidebar.update",value=signature}) end)
-			if ok then last[pane]=signature end
+			if ok then last[pane], last_structure[pane] = signature, get_structure() end
+			return
 		end
+		-- A small patch when only cards changed; the full tree when the shell changed, nothing
+		-- changed, or too many slots did.
+		if last_structure[pane]==get_structure() and #changes>0 and #changes<=24 and last[pane]~=signature then
+			local slots={}
+			for _,key in changes do slots[key]=subtree_cache.node(key) end
+			local value=tern.json.encode({slots=slots})
+			local ok=pcall(function() cx.session:event(pane,{ev="action",act="switchboard.sidebar.patch",value=value}) end)
+			if ok then last[pane], last_structure[pane] = signature, get_structure() end
+			return
+		end
+		-- A sidebar pane can outlive its program for a poll; one dead pane
+		-- must not abort the updates for every other sidebar.
+		local ok=pcall(function() cx.session:event(pane,{ev="action",act="switchboard.sidebar.update",value=signature}) end)
+		if ok then last[pane], last_structure[pane] = signature, get_structure() end
 	end
 	-- Only the visible sidebar needs the tree now. Every other tab's block (often dozens) would each
 	-- apply and diff a full tree per change, stalling animations; they catch up, oldest first, a couple
 	-- per render.
+	-- A prewarm render is built for a background tab (reveal_target): it must not overwrite
+	-- the visible sidebar's tree, whose highlight belongs to the real focus.
+	local visible_sidebar = actual_focus and pending[cx.session:tab_of(actual_focus)]
 	local stale={}
 	for pane in owned do
-		if pane == data.sidebar_pane then
+		if pane == visible_sidebar then
+			if not reveal_target and (force or last[pane] ~= signature) then push(pane) end
+		elseif pane == data.sidebar_pane then
 			if force or last[pane] ~= signature then push(pane) end
 		elseif last[pane] ~= signature then
 			table.insert(stale,pane)
 		end
 	end
-	if not visible_only and #stale > 0 then
-		table.sort(stale,function(a,b) return (pushed_at[a] or 0) < (pushed_at[b] or 0) end)
-		for i=1,math.min(#stale,2) do push(stale[i]) end
-	end
+	-- Background sidebars are left stale on purpose: each push costs a big JSON decode and a
+	-- full tree diff in that block's own VM, and the next time its tab is shown the render that
+	-- focuses it pushes the current tree before it is seen.
+	if visible_only then for pane in owned do if pane ~= visible_sidebar then last[pane]=nil end end end
 end
 
 -- Tern drops plugin sheets on a style reload and on every plugin reload, and the native
 -- rail (with its own tab list and 212px panel offset) shows until this is back. Send it at
 -- load and with every refresh (idempotent), not only once the first poll has run.
-local function apply_navigation()
+apply_navigation = function(force)
+	if not force and tern.now() - nav_at < 15000 then return end
+	nav_at = tern.now()
 	tern.css("navigation", [[
 	:root { --vt-room:0px !important; --vt-w:0px !important; }
 	:root #panel, :root #widgetbar { left:0 !important; }
@@ -1054,7 +1204,7 @@ local function apply_navigation()
 	.tn-pane:has(.switchboard) .switchboard { padding-top:calc(6px + 20px / var(--tn-zoom,1)); }
 	]] else ""))
 end
-if enabled then apply_navigation() end
+if enabled then apply_navigation(true) end
 
 -- Give one sidebar-less tab on the current host its sidebar per refresh, so switching to it
 -- (natively or by changing host) shows a finished tab instead of a bare one that grows a
@@ -1078,40 +1228,128 @@ local function prewarm_next(cx)
 	end
 end
 
-refresh = function(cx, read)
+-- Cheap fingerprint of one table's top-level fields. Nested tables count by length only.
+local function fingerprint(t)
+	local out = {}
+	for k, v in t do
+		if type(v) == "table" then table.insert(out, tostring(k) .. "=#" .. #v)
+		else table.insert(out, tostring(k) .. "=" .. tostring(v)) end
+	end
+	return table.concat(out, ",")
+end
+
+local KEY_SEP = "\30"
+local function cell(value)
+	if type(value) == "table" then
+		return table.concat({tostring(value.label), tostring(value.text), tostring(value.summary)}, "\31")
+	end
+	return tostring(value)
+end
+
+-- The miniature layout's shape, so a split move repaints without a heartbeat.
+local function shape_key(tree)
+	if type(tree) ~= "table" then return "-" end
+	if tree.pane then return tostring(tree.pane) end
+	return tostring(tree.split) .. tostring(tree.ratio) .. "(" .. shape_key(tree[1]) .. "|" .. shape_key(tree[2]) .. ")"
+end
+
+-- Pane fields a card row prints, including the nested running command line.
+local function pane_key(pane)
+	return fingerprint(pane) .. KEY_SEP .. tostring(pane.running and pane.running.line)
+		.. KEY_SEP .. tostring(pane.last and pane.last.line) .. KEY_SEP .. tostring(pane.last and pane.last.status)
+		.. KEY_SEP .. tostring(pane.error)
+end
+
+-- One agent record's card content: state, snapshot steps, todo, children, labels.
+local function record_key(record)
+	if type(record) ~= "table" then return "-" end
+	local snapshot = record.snapshot
+	local out = {
+		tostring(record.state), tostring(record.updated_at), tostring(record.finished_at),
+		tostring(record.progress_completed_at), tostring(record.unseen),
+		tostring(record.unavailable), tostring(record.empty_transcript),
+	}
+	if type(snapshot) == "table" then
+		local todo = snapshot.todo
+		table.insert(out, tostring(todo and todo.done) .. "/" .. tostring(todo and todo.total))
+		table.insert(out, tostring(snapshot.response ~= nil))
+		for _, step in snapshot.steps or {} do
+			table.insert(out, tostring(step.label) .. "\31" .. tostring(step.tool) .. "\31" .. tostring(step.status))
+		end
+	end
+	for _, child in record.subagents or {} do
+		table.insert(out, table.concat({
+			tostring(child.id), tostring(child.state), tostring(child.title), tostring(child.model), tostring(child.pane),
+			cell(child.error or child.latest_step or child.step or child.summary or child.result),
+		}, "\31"))
+	end
+	return table.concat(out, KEY_SEP)
+end
+
+local function hosts_key(cx)
+	local out = {}
+	for _, host in hosts_list(cx) do
+		table.insert(out, table.concat({tostring(host.id), tostring(host.kind), tostring(host.state), tostring(host.name), tostring(host.current)}, "\31"))
+	end
+	return table.concat(out, KEY_SEP)
+end
+
+local function quotas_key()
+	local out = {}
+	for _, q in quotas do
+		if type(q) == "table" then
+			table.insert(out, table.concat({tostring(q.provider), tostring(q.label), tostring(q.remaining), tostring(q.stale), tostring(q.reset_at)}, "\31"))
+		end
+	end
+	return table.concat(out, KEY_SEP)
+end
+
+-- Everything a render shows that a background pass can change. Cheap to build over
+-- ~60 cards: string joins only, no json. A changed step label repaints on the next poll.
+local function screen_key(cx, infos)
+	local parts = {
+		tostring(cx.session:focused()), tostring(selected_content), hosts_key(cx),
+		tostring(quota_epoch), tostring(quota_state), quotas_key(),
+		fingerprint(sidebar_settings), tostring(workspace_lift),
+		fingerprint(workspace_expanded), fingerprint(subagents_expanded),
+	}
+	for _, tab in cx.session:tabs() do
+		local layout = cx.session:layout(tab.id)
+		table.insert(parts, fingerprint(tab) .. KEY_SEP .. shape_key(layout and layout.root))
+	end
+	for _, pane in cx.session:panes() do table.insert(parts, pane_key(pane)) end
+	for _, info in infos do
+		table.insert(parts, fingerprint(info) .. KEY_SEP .. record_key(activity[info.pane]))
+	end
+	return table.concat(parts, "\n")
+end
+
+-- Placement and tab bookkeeping. Returns false when it ended in a jump away from a closed tab.
+local function structure_pass(cx, prewarm)
+	apply_navigation(false)
+	discover(cx)
+	local target = cx.session:focused()
+	if target and owned[target] then
+		local tab=cx.session:tab_of(target)
+		local shape=tab and cx.session:layout(tab)
+		if shape and not model.clean_layout(shape.root,owned) then
+			closed_tabs_to_check[tab]=true
+			jump_after_close(cx)
+			return false
+		end
+	end
+	if target and not owned[target] then place(cx, target) end
+	if prewarm then prewarm_next(cx) end
+	return true
+end
+
+-- Runs one step under the changing guard. A failure backs off 5 s instead of pausing refreshes.
+local function guarded(cx, step)
 	if tern.now() < retry_at then return end
 	if not enabled or changing or not ready then return end
 	if not cx.session:focused() then return end
-	
 	changing = true
-	local ok, err = pcall(function()
-		apply_navigation()
-		discover(cx)
-		local target = cx.session:focused()
-		if target and owned[target] then
-			local tab=cx.session:tab_of(target)
-			local shape=tab and cx.session:layout(tab)
-			if shape and not model.clean_layout(shape.root,owned) then
-				changing=false
-				closed_tabs_to_check[tab]=true
-				jump_after_close(cx)
-				return
-			end
-		end
-		if target and not owned[target] then place(cx, target) end
-		prewarm_next(cx)
-		local infos = all_infos(cx)
-		sample(cx, infos, read == true)
-		last_infos = infos
-		tern.timer(0, function(nextCx)
-			local ok_render, err_render = pcall(render, nextCx, infos)
-			if not ok_render then tern.log.warn("switchboard render failed: " .. tostring(err_render)) end
-		end)
-		local current_pane=cx.session:focused()
-		local current_tab=current_pane and cx.session:tab_of(current_pane)
-		if not current_tab or not pending[current_tab] then return end
-		if read then read_usage(cx) end
-	end)
+	local ok, err = pcall(step)
 	changing = false
 	if not ok then
 		-- A closed remote tab can make one pass fail (a host or layout in flight).
@@ -1120,6 +1358,69 @@ refresh = function(cx, read)
 		tern.css("navigation", "")
 		cx:toast("error", "Switchboard refresh failed", tostring(err))
 	end
+end
+
+-- Repaints now. User actions use this: a deferred render waits behind the timer hook, which a budget
+-- pause holds, so the old highlight would stay on screen.
+local function present_now(cx)
+	local infos = all_infos(cx)
+	local fresh = sample(cx, infos, false)
+	last_infos = infos
+	local ok, err = pcall(render, cx, infos)
+	if not ok then tern.log.warn("switchboard render failed: " .. tostring(err)); return end
+	-- render() reconciles selected_content with the true focus; key it afterwards so the
+	-- gate reflects the tree that was actually pushed.
+	rendered_key, rendered_at = screen_key(cx, infos), tern.now()
+	-- A card that just appeared gets its first transcript read on the next tick, then
+	-- repaints so it does not sit on "Loading activity…" until the poll.
+	if fresh > 0 then
+		tern.timer(0, function(nextCx)
+			if not nextCx then return end
+			sample(nextCx, infos, true)
+			if enabled and ready and not changing then present_now(nextCx) end
+		end)
+	end
+end
+
+-- User paths (navigate, sidebar actions, close, lift) place and repaint in the same callback.
+refresh = function(cx)
+	guarded(cx, function()
+		if structure_pass(cx, false) then present_now(cx) end
+	end)
+end
+
+-- Skips the render when nothing it shows changed. The 2 s heartbeat still repaints time-based text.
+local function render_background(cx, infos)
+	local key = screen_key(cx, infos)
+	local now = tern.now()
+	if key == rendered_key and now - rendered_at < 2000 then return end
+	if key ~= rendered_key then tern.log.debug("switchboard: content changed, repainting") end
+	local ok, err = pcall(render, cx, infos)
+	if not ok then tern.log.warn("switchboard render failed: " .. tostring(err)); return end
+	rendered_key, rendered_at = screen_key(cx, infos), now
+end
+
+-- Background pass in three ticks, so no callback stacks placement, sampling and rendering.
+local function background_refresh(cx)
+	guarded(cx, function()
+		if not structure_pass(cx, false) then return end
+		tern.timer(0, function(sampleCx)
+			if not sampleCx then return end
+			guarded(sampleCx, function()
+				prewarm_next(sampleCx)
+				local infos = all_infos(sampleCx)
+				local fresh = sample(sampleCx, infos, false)
+				last_infos = infos
+				-- The render tick below follows the read tick, so a new card paints with content.
+				if fresh > 0 then
+					tern.timer(0, function(nextCx) if nextCx then sample(nextCx, infos, true) end end)
+				end
+				tern.timer(0, function(renderCx)
+					if renderCx then render_background(renderCx, infos) end
+				end)
+			end)
+		end)
+	end)
 end
 
 local function restore(cx)
@@ -1156,7 +1457,7 @@ local function read_native_subagents(cx)
  local wall=os.time()*1000
  local pick,oldest
  for pane,record in activity do
-  local due=(record.subagent_read_at or -math.huge)+(if record.state=="working" or #(record.subagents or {})>0 then 2000 else 10000)
+  local due=(record.subagent_read_at or -math.huge)+(if record.state=="working" or #(record.subagents or {})>0 then 3000 else 10000)
  if not record.synthetic and due<=now and (not pick or due<oldest) then pick,oldest=pane,due end
  end
  if not pick then return end
@@ -1175,16 +1476,28 @@ local function read_native_subagents(cx)
   record.subagents=children
   subagent_rows[string.format("%.0f",pick)]=children
   tern.kv.set("subagent_rows",subagent_rows)
+  refresh_due=true
  end
 end
 
-local function navigate(cx,requested)
-	if not requested then return false end
-	if selected_content==requested and cx.session:focused()==requested then
-		selected_workspace=nil
-		return true
+-- `later`: the click came from a native sidebar block, which already moved its own highlight.
+-- Then the frame is released as soon as the tab is focused and the repaint (which may spawn a
+-- sidebar block for the tab and push a whole tree) runs on the next tick instead of holding it.
+-- Tell the sidebar block which card is authoritative (a few bytes, no tree push).
+local function confirm_select(cx, pane)
+	local tab=cx.session:tab_of(pane)
+	local block=tab and pending[tab]
+	if block and not is_canvas[block] then
+		pcall(function() cx.session:event(block,{ev="action",act="switchboard.sidebar.select",value=tostring(pane)}) end)
 	end
-	if not cx.session:pane(requested) then
+end
+
+local function navigate(cx,requested,later)
+	if not requested then return false end
+	-- Never trust the tracked selection to mean "already shown": a stale highlight used to
+	-- swallow clicks. Every click re-asserts the session and the focus below.
+	local info = cx.session:pane(requested)
+	if not info then
 		cx:toast("info","Agent is no longer open")
 		refresh(cx)
 		return false
@@ -1193,19 +1506,55 @@ local function navigate(cx,requested)
 	changing=true
 	selected_workspace=nil
 	selected_content = requested
-	navigation_intent=if cx.session:focused()==requested then nil else requested
 	local tab=cx.session:tab_of(requested)
+	local here=cx.session:focused()
+	local same_tab=tab~=nil and here~=nil and cx.session:tab_of(here)==tab
+	reveal_intent=requested
 	if tab then focused_by_tab[tab]=requested end
-	if tab then pcall(prewarm_agent_tab,cx,requested) end
+	if tab and not later then pcall(prewarm_agent_tab,cx,requested) end
 	if tab then
-		for _,info in cx.session:tabs() do
-			if info.id==tab and info.session~=cx.sessions:current().id then cx.sessions:switch(info.session);break end
+		for _,row in cx.session:tabs() do
+			if row.id==tab and row.session~=cx.sessions:current().id then cx.sessions:switch(row.session);break end
 		end
 	end
+	if not tab and info.parked then pcall(cx.layout.unpark,cx.layout,requested) end
 	cx.layout:focus(requested)
-	if cx.session:focused()==requested then navigation_intent=nil end
+	local landed=cx.session:focused()==requested
+	if not landed then
+		selected_content=nil
+		-- A session switch can apply on the next frame, so the first focus attempt may be too
+		-- early. Retry once, then confirm the selection from where the focus actually is.
+		tern.timer(0, function(nextCx)
+			if not nextCx or not nextCx.session:pane(requested) then return end
+			local want=nextCx.session:tab_of(requested)
+			if want then
+				for _,row in nextCx.session:tabs() do
+					if row.id==want and row.session~=nextCx.sessions:current().id then nextCx.sessions:switch(row.session);break end
+				end
+			end
+			nextCx.layout:focus(requested)
+			local ok=nextCx.session:focused()==requested
+			if ok then selected_content=requested end
+			confirm_select(nextCx, nextCx.session:focused() or requested)
+			if enabled and ready and not changing then refresh(nextCx) end
+		end)
+	else
+		confirm_select(cx, requested)
+	end
 	changing=false
-	refresh(cx)
+	if later and same_tab then
+		-- Nothing to repaint: the block moved its own highlight and the window tree did not change.
+		-- Send the authoritative pane anyway (a few bytes) so a focus that landed elsewhere cannot
+		-- leave the previous card selected.
+		reveal_intent=nil
+		rendered_at=tern.now()
+	elseif later then
+		tern.timer(0,function(nextCx)
+			if nextCx and enabled and ready then refresh(nextCx) end
+		end)
+	else
+		refresh(cx)
+	end
 	return true
 end
 
@@ -1330,7 +1679,7 @@ local function new_project_tab(cx,project,path)
 	if not use_host(cx,host_of(cx,"sessions",project)) then return end
 	project_paths[string.format("%.0f",project)]=path
 	tern.kv.set("project_paths",project_paths)
-	selected_workspace=nil;navigation_intent=nil;selected_content=nil
+	selected_workspace=nil;selected_content=nil
 	changing=true
 	local ok,err=pcall(function()
 		cx.sessions:switch(project)
@@ -1467,6 +1816,13 @@ end
 
 local function sidebar_action(ev, cx)
 	if ev.owner ~= PLUGIN_ID then return false end
+	if ev.act == "switchboard.sidebar.resync" then
+		if ev.pane and sidebar_snapshot then
+			pcall(function() cx.session:event(ev.pane,{ev="action",act="switchboard.sidebar.update",value=sidebar_snapshot}) end)
+			last[ev.pane], last_structure[ev.pane] = sidebar_snapshot, nil
+		end
+		return true
+	end
 	-- Click on a closed agent card: reopen its omp session in a new tab. The id is
 	-- validated here and comes from the durable session, never from typed text.
 	local resume=string.match(ev.act,"^resume%-session:([%w%-]+)$")
@@ -1502,7 +1858,8 @@ local function sidebar_action(ev, cx)
 	  if tostring(item.id)==id then child=item;break end
 	 end
 	 if not child then cx:toast("info","Subagent is no longer available");return true end
-	 if navigate(cx,parent_pane) then
+	 local later = ev.pane ~= nil and not is_canvas[ev.pane]
+	 if navigate(cx,parent_pane,later) then
 	  local surface=cx.session:surface(parent_pane,{root="dock",nodes=300})
 	  local event=subagents.focus_event(surface,id)
 	  if event then cx.session:event(parent_pane,event)
@@ -1512,7 +1869,10 @@ local function sidebar_action(ev, cx)
 	end
 	local requested = tonumber(string.match(ev.act,"^pane:(%d+)$"))
 	if requested then
-	 if navigate(cx,requested) then
+	 -- A native sidebar block already moved its own highlight, so its click can repaint
+	 -- on the next tick; a canvas has no local flip and needs the paint now.
+	 local later = ev.pane ~= nil and not is_canvas[ev.pane]
+	 if navigate(cx,requested,later) then
 	  -- Selecting a parent card must leave any child previously focused inside
 	  -- that same OMP pane. Child-card navigation deliberately bypasses this.
 	  local surface=cx.session:surface(requested,{root="dock",nodes=300})
@@ -1779,7 +2139,7 @@ end
 tern.on("window_start", function(cx)
 	force_until = tern.now() + 3000
 	-- A registered hook keeps the timer handle reachable across Lua collection.
-	if clock or activity_clock or live_clock then refresh(cx) end
+	if clock or activity_clock then refresh(cx) end
 end)
 local notified_at = {}
 -- macOS notifications are for when Tern is in the background; the frontmost app is read with
@@ -1828,9 +2188,11 @@ for _, event in {"focus", "pane_created", "pane_closed", "tab_created", "tab_clo
 			status_reads[ev.pane]=nil
 		end
 		if event == "focus" and cx.session:focused() ~= ev.pane then return end
-		if event == "focus" and not owned[ev.pane] and (not navigation_intent or navigation_intent == ev.pane) then
+		-- Any focus on a content pane becomes the highlight, even when an earlier
+		-- navigation intent never landed; a stuck intent must not freeze the selection.
+		if event == "focus" and not owned[ev.pane] then
+			if reveal_intent and reveal_intent~=ev.pane then reveal_intent=nil end
 			selected_content=ev.pane
-			if navigation_intent == ev.pane then navigation_intent=nil end
 			local tab=ev.tab or cx.session:tab_of(ev.pane)
 			if tab then focused_by_tab[tab]=ev.pane end
 		end
@@ -1851,7 +2213,6 @@ for _, event in {"focus", "pane_created", "pane_closed", "tab_created", "tab_clo
 					jump_after_close(cx)
 				end
 			end
-			if navigation_intent==ev.pane then navigation_intent=nil end
 			local closed_tab
 			for tab,pane in pending do if pane==ev.pane then closed_tab=tab; break end end
 			for tab, pane in pending do
@@ -1873,21 +2234,40 @@ for _, event in {"focus", "pane_created", "pane_closed", "tab_created", "tab_clo
 				end)
 			end
 		end
+		-- Focus moves are user actions: repaint the highlight at once. A focus event fired
+		-- inside navigate()/place() sees changing=true; schedule one after the operation,
+		-- skipping it when that operation already repainted.
+		if event == "focus" and enabled and ready then
+			if changing then
+				tern.timer(0, function(nextCx)
+					if not nextCx or changing or not enabled or not ready then return end
+					local infos = last_infos
+					if not infos or screen_key(nextCx, infos) ~= rendered_key then present_now(nextCx) end
+				end)
+			else
+				present_now(cx)
+			end
+		end
 		-- Keep the timer handle rooted in a recurring registered hook.
 		if clock then refresh_due = true end
 	end)
 end
--- Events only mark a refresh pending; a 5 s heartbeat covers changes no event announces.
+-- Events only mark a refresh pending; a 2 s heartbeat covers changes no event announces.
 local function refresh_if_due(cx)
-	if not refresh_due and tern.now()-refresh_at<5000 then return end
+	if not refresh_due and tern.now()-refresh_at<2000 then return end
 	refresh_due, refresh_at = false, tern.now()
-	refresh(cx, false)
+	background_refresh(cx)
 end
+-- A paused timer hook skips every poll. On resume the next poll refreshes once, so the sidebar catches up.
+tern.on("budget", function(ev)
+	if ev.hook == "timer" and ev.state == "resumed" then refresh_due = true end
+end)
+
 local function poll(cx)
  clock = tern.timer(1500, poll)
- -- Re-assert the layout sheet every tick: Tern can drop plugin sheets on a reload and
- -- the native rail (212px panel offset) stays visible until one lands.
- if enabled then apply_navigation() end
+ -- Re-assert the layout sheet occasionally, not every tick: a style write on an unchanged
+ -- sheet recalculates the whole window.
+ if enabled then apply_navigation(false) end
 	ready = true
 	if cx and not enabled then
 		discover(cx)
@@ -1903,6 +2283,8 @@ local function poll(cx)
 		else refresh_if_due(cx) end
 		read_usage(cx)
 		scan_terminals()
+		read_native_subagents(cx)
+
 	end
 end
 local function activity_gap()
@@ -1915,23 +2297,23 @@ local function poll_activity(cx)
 	if cx and enabled then
 		local infos=all_infos(cx)
 		read_terminal_screens(cx, infos)
-		sample(cx, infos, true)
-		-- First sight has no snapshot: its extra read runs on a tick of its own, so one callback never does two transcript reads.
-		for _, record in activity do
-			if record.read_at == -math.huge then
-				tern.timer(0, function(nextCx) sample(nextCx, infos, true) end)
-				break
+		sample(cx, infos, false)
+		-- Transcript reads run on a tick of their own, so one callback never does two of them.
+		tern.timer(0, function(readCx)
+			if not readCx then return end
+			sample(readCx, infos, true)
+			-- First sight has no snapshot yet: its extra read gets a tick of its own.
+			for _, record in activity do
+				if record.read_at == -math.huge then
+					tern.timer(0, function(nextCx) if nextCx then sample(nextCx, infos, true) end end)
+					break
+				end
 			end
-		end
+		end)
 		for _, n in terminal_notices do notify_agent(cx, n.pane, n.reason, 120000) end
 		terminal_notices = {}
 	end
 	activity_clock=tern.timer(activity_gap(),poll_activity)
 end
-local function poll_live(cx)
- live_clock=tern.timer(1000,poll_live)
- if cx and enabled then read_native_subagents(cx) end
-end
-live_clock=tern.timer(500,poll_live)
 activity_clock=tern.timer(300,poll_activity)
 clock = tern.timer(200, poll)

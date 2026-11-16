@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3
+
+- Sidebar updates are incremental: a block gets only the cards that changed (a few KB) with a full-tree resync fallback, and only the visible tab's sidebar is kept in sync.
+- Repaints are cheaper: styles apply only when they change, background sidebars are not re-pushed, same-tab clicks do no window work, and card projects name the folder the agent runs in.
+- Clicking an agent card always selects it: the block flips the highlight locally, the window confirms the authoritative pane, and a focus that lands a frame late is retried.
+- Each card is memoized by its own inputs, so a poll or click rebuilds only the cards that changed.
+- Fewer timers and child processes: one timer chain removed, subagent reads at 3 s per agent, process scan at 10 s, isolation scan at 5 min.
+
 ## 0.1.2
 
 - OMP vibe workers from `vibe_spawn`/`vibe_wait` results appear in the agent card's subagent list, read from the session file at most every 4 s; clicking one opens its thread.

@@ -30,7 +30,56 @@ local function percent_encode(value)
 	return out
 end
 
-function M.render(ui, data, focused)
+-- Subtree signatures. @SEP is a control character: transcript labels are single-line,
+-- and a collision here would only keep one stale card until some other input changes.
+local SEP = "\30"
+local function join(...)
+	local n = select("#", ...)
+	local out = table.create(n)
+	for i = 1, n do out[i] = tostring(select(i, ...)) end
+	return table.concat(out, SEP)
+end
+
+-- The miniature layout: pane ids plus each split's direction and ratio.
+local function layout_key(tree)
+	if type(tree) ~= "table" then return "-" end
+	if tree.pane then return tostring(tree.pane) end
+	return tostring(tree.split) .. tostring(tree.ratio) .. "[" .. layout_key(tree[1]) .. "|" .. layout_key(tree[2]) .. "]"
+end
+
+-- The last steps and the visible todo, exactly what the card prints.
+local function progress_key(p)
+	if type(p) ~= "table" then return "-" end
+	local todo = p.todo
+	local out = {tostring(todo and todo.done), tostring(todo and todo.total)}
+	for _, step in p.steps or {} do
+		out[#out + 1] = join(step.label, step.tool, step.status)
+	end
+	return table.concat(out, SEP)
+end
+
+local function latest_key(value)
+	if type(value) == "table" then return join(value.label, value.text, value.summary) end
+	return value
+end
+
+local function subagents_key(rows)
+	local out = {}
+	for _, child in rows or {} do
+		out[#out + 1] = join(
+			child.id, child.title, child.name, child.state, child.model, child.pane,
+			latest_key(child.error or child.latest_step or child.step or child.summary or child.result)
+		)
+	end
+	return table.concat(out, SEP)
+end
+
+local function cached(cache, key, signature, build)
+	if cache then return cache.get(key, signature, build) end
+	return build()
+end
+
+function M.render(ui, data, focused, cache)
 	local settings = data.sidebar_settings or {}
 	local show_closed = settings.closed ~= false
 	local show_steps = settings.steps ~= false
@@ -91,53 +140,67 @@ function M.render(ui, data, focused)
 		-- Keep the normal click action: the window treats a click while a workspace
 		-- is picked up as the drop, so a stale block tree cannot swallow the move.
 		local row_action = (if #p.tabs == 0 then "select-workspace:" else "fold-workspace:") .. workspace_key
-		local project = el("button", "cp-project" .. (if (p.busy_tabs or 0)>0 then " cp-workspace-busy" else "") .. (if p.current then " cp-current" else "") .. (if expanded then " cp-open" else ""), {
-			icon("folder", "cp-project-icon"),
-			project_text(p.name, "cp-label cp-project-name"), text("cp-count", (if (p.busy_tabs or 0)>0 then tostring(p.busy_tabs) .. " active · " else "") .. tostring(#p.tabs) .. (if #p.tabs == 1 then " tab" else " tabs")),
-			icon("chev-r","cp-workspace-chevron"),
-		}, nil, row_action)
-		project.p.attrs = {["aria-current"]=if p.current then "true" else "false",["aria-expanded"]=if expanded then "true" else "false"}
-		project.p.title = if lift_id
-			then (if picked then "Cancel moving " .. p.name else "Move " .. (lift_name or "workspace") .. " here")
-			else (if #p.tabs == 0 then "Select project · ⌘T to open a tab" else (if expanded then "Collapse " else "Expand ") .. p.name)
-		local grip = el("button", "cp-workspace-grip", nil, "⠿", "lift-workspace:" .. workspace_key)
-		grip.p.title = if picked then "Cancel move" else "Pick up to move, then click where it goes"
-		grip.p.aria = if picked then "Cancel moving " .. p.name else "Move " .. p.name
-		-- Classes, not attrs: Tern's view drops arbitrary attributes, so CSS never saw them.
+		local color_class = project_colors.class((data.project_colors or {})[p.name or ""])
 		local drop = if lift_id and not picked then " cp-drop-target" else ""
-		local row_children = {project, grip}
-		if drop ~= "" then table.insert(row_children, text("cp-drop-hint", "Drop here")) end
-		table.insert(row_children, ui.button("", {
-			icon="x", title="Close workspace", aria="Close workspace " .. p.name,
-			role="switchboard.workspace-close", variant="quiet", size="sm",
-			actions={click="close-workspace:" .. workspace_key},
-		}))
-		local project_row = ui.el("div", {class="cp-project-row" .. (if picked then " cp-picked" else "") .. drop, key="project-row" .. workspace_key}, row_children)
+		local signature = join(
+			"workspace", p.id, p.name, p.current, p.busy_tabs, #p.tabs, expanded, picked,
+			lift_id, lift_name, color_class, row_action, drop
+		)
+		local project_row = cached(cache, "ws:" .. workspace_key, signature, function()
+			local project = el("button", "cp-project" .. (if (p.busy_tabs or 0)>0 then " cp-workspace-busy" else "") .. (if p.current then " cp-current" else "") .. (if expanded then " cp-open" else ""), {
+				icon("folder", "cp-project-icon"),
+				project_text(p.name, "cp-label cp-project-name"), text("cp-count", (if (p.busy_tabs or 0)>0 then tostring(p.busy_tabs) .. " active · " else "") .. tostring(#p.tabs) .. (if #p.tabs == 1 then " tab" else " tabs")),
+				icon("chev-r","cp-workspace-chevron"),
+			}, nil, row_action)
+			project.p.attrs = {["aria-current"]=if p.current then "true" else "false",["aria-expanded"]=if expanded then "true" else "false"}
+			project.p.title = if lift_id
+				then (if picked then "Cancel moving " .. p.name else "Move " .. (lift_name or "workspace") .. " here")
+				else (if #p.tabs == 0 then "Select project · ⌘T to open a tab" else (if expanded then "Collapse " else "Expand ") .. p.name)
+			local grip = el("button", "cp-workspace-grip", nil, "⠿", "lift-workspace:" .. workspace_key)
+			grip.p.title = if picked then "Cancel move" else "Pick up to move, then click where it goes"
+			grip.p.aria = if picked then "Cancel moving " .. p.name else "Move " .. p.name
+			-- Classes, not attrs: Tern's view drops arbitrary attributes, so CSS never saw them.
+			local row_children = {project, grip}
+			if drop ~= "" then table.insert(row_children, text("cp-drop-hint", "Drop here")) end
+			table.insert(row_children, ui.button("", {
+				icon="x", title="Close workspace", aria="Close workspace " .. p.name,
+				role="switchboard.workspace-close", variant="quiet", size="sm",
+				actions={click="close-workspace:" .. workspace_key},
+			}))
+			return ui.el("div", {class="cp-project-row" .. (if picked then " cp-picked" else "") .. drop, key="project-row" .. workspace_key}, row_children)
+		end)
 		table.insert(projects, project_row)
 		if expanded then
 			for _, t in p.tabs do
 				local tab_key = string.format("%.0f",t.id)
-				local copy = {text("cp-tab-title",t.name)}
-				if t.secondary then table.insert(copy,text("cp-tab-secondary",t.secondary)) end
-				local children = {text("cp-branch","·"),el("div","cp-tab-copy",copy)}
-				if t.layout then
-					local shapes = {miniature(t.layout,1)}
-					if (t.floats or 0) > 0 then table.insert(shapes, el("div","cp-mini-float")) end
-					table.insert(children,ui.el("div",{class="cp-mini",attrs={["aria-hidden"]="true"}},shapes))
-				end
-				
-				local button = el("button", "cp-tab" .. (if t.pane == focused then " cp-selected" else ""),children,nil,"pane:" .. string.format("%.0f",t.pane))
-				button.p.key="tab" .. tab_key
-				button.p.title = t.name .. " · " .. tostring(t.pane_count or 1) .. " panes"
-				button.p.aria = button.p.title
-				button.p.attrs = {["aria-pressed"]=if t.pane == focused then "true" else "false"}
-				local close = ui.button("", {
-					icon="x", title="Close tab", aria="Close " .. t.name,
-					role="switchboard.tab-close", variant="quiet", size="sm",
-					actions={click="close-tab:" .. tab_key},
-				})
-				close.p.key="close-tab" .. tab_key
-				table.insert(projects, ui.el("div", {class="cp-tab-row",key="tab-row" .. tab_key}, {button,close}))
+				local signature = join(
+					"tab", t.id, t.name, t.secondary, t.pane, t.pane_count,
+					t.floats, layout_key(t.layout), t.pane == focused
+				)
+				local tab_row = cached(cache, "tab:" .. tab_key, signature, function()
+					local copy = {text("cp-tab-title",t.name)}
+					if t.secondary then table.insert(copy,text("cp-tab-secondary",t.secondary)) end
+					local children = {text("cp-branch","·"),el("div","cp-tab-copy",copy)}
+					if t.layout then
+						local shapes = {miniature(t.layout,1)}
+						if (t.floats or 0) > 0 then table.insert(shapes, el("div","cp-mini-float")) end
+						table.insert(children,ui.el("div",{class="cp-mini",attrs={["aria-hidden"]="true"}},shapes))
+					end
+
+					local button = el("button", "cp-tab" .. (if t.pane == focused then " cp-selected" else ""),children,nil,"pane:" .. string.format("%.0f",t.pane))
+					button.p.key="tab" .. tab_key
+					button.p.title = t.name .. " · " .. tostring(t.pane_count or 1) .. " panes"
+					button.p.aria = button.p.title
+					button.p.attrs = {["aria-pressed"]=if t.pane == focused then "true" else "false"}
+					local close = ui.button("", {
+						icon="x", title="Close tab", aria="Close " .. t.name,
+						role="switchboard.tab-close", variant="quiet", size="sm",
+						actions={click="close-tab:" .. tab_key},
+					})
+					close.p.key="close-tab" .. tab_key
+					return ui.el("div", {class="cp-tab-row",key="tab-row" .. tab_key}, {button,close})
+				end)
+				table.insert(projects, tab_row)
 			end
 		end
 	end
@@ -150,6 +213,18 @@ function M.render(ui, data, focused)
 		-- A parent with subagents keeps its last todo bar as history; the time hide
 		-- would remove the very row the disclosure sits beside.
 		if not todo and #subagents > 0 and p and p.todo then todo = p.todo end
+		local color_class = a.project and project_colors.class((data.project_colors or {})[a.project]) or "-"
+		local sub_open = data.subagents_expanded and data.subagents_expanded[string.format("%.0f", a.pane)] == true
+		local signature = join(
+			"agent", a.pane, a.name, a.project, a.model, a.state, a.finished, a.finished_at, a.progress_completed_at,
+			a.host and join(a.host.id, a.host.kind, a.host.state, a.host.name) or "-",
+			a.isolation and join(a.isolation.kind, a.isolation.dirty, a.isolation.name, a.isolation.detail) or "-",
+			a.activity_status, a.unavailable, a.harness, a.cwd,
+			show_hosts, show_steps, a.pane == focused,
+			todo and todo.done or "-", todo and todo.total or "-",
+			color_class, sub_open, progress_key(p), subagents_key(subagents)
+		)
+		return cached(cache, "agent:" .. tostring(a.pane), signature, function()
 		local state_label = if a.state == "idle" and (a.finished or (a.finished_at or 0) > 0) then "Finished" else (LABELS[a.state] or a.state)
 		local metadata = {}
 		if a.host and show_hosts then
@@ -269,26 +344,36 @@ function M.render(ui, data, focused)
 			table.insert(branch_children, ui.el("div", {class="cp-subagents", key="subagents" .. parent_pane}, child_cards))
 		end
 		return ui.el("div", {class="cp-agent-parent-row", key="agent-row" .. parent_pane}, {agent, ui.el("div", {class="cp-subagent-branch", key="subagent-branch" .. parent_pane}, branch_children)})
+		end)
 	end
 	for _, a in data.agents do table.insert(agents,render_agent(a)) end
 	-- Agents that were seen and have since closed stay in the list, dimmed, until the broom clears them.
 	local closed = if show_closed then data.closed or {} else {}
 	for i, entry in closed do
-		local detail = {project_text(entry.project, "cp-agent-project")}
-		if entry.model then table.insert(detail, text("cp-agent-model", entry.model)) end
-		-- A closed chat with a known session can be reopened; old history stays inert.
-		local resumable = type(entry.session) == "string" and entry.session ~= ""
-		local card = el(if resumable then "button" else "div", "cp-agent cp-closed" .. (if resumable then " cp-resumable" else ""), {
-			el("div", "cp-agent-top", {
-				text("cp-label", entry.name),
-				el("div", "cp-agent-status", {text("cp-dot", "●"), text("cp-state", "Closed")}),
-			}),
-			el("div", "cp-agent-bottom", detail),
-		}, nil, if resumable then "resume-session:" .. entry.session else nil)
-		-- A reused pane can hold two closed chats, so neither pane nor session alone is unique.
-		card.p.key = "closed" .. tostring(i) .. "-" .. tostring(entry.session or entry.pane or "")
-		card.p.title = entry.name .. (if entry.cwd and entry.cwd ~= "" then "\n" .. entry.cwd else "") .. (if resumable then "\n· Click to reopen session" else "")
-		if resumable then card.p.aria = entry.name .. " · Click to reopen session" end
+		local color_class = entry.project and project_colors.class((data.project_colors or {})[entry.project]) or "-"
+		local signature = join("closed", entry.session, entry.name, entry.project, entry.model, entry.pane, entry.cwd, color_class)
+		-- Identity, not list position: a closed card keeps its slot when others open or close, so
+		-- the sidebar shell does not change and only the touched card is patched.
+		local closed_key = tostring(entry.session or entry.pane or i)
+		local card = cached(cache, "closed:" .. closed_key, signature, function()
+			local detail = {project_text(entry.project, "cp-agent-project")}
+			if entry.model then table.insert(detail, text("cp-agent-model", entry.model)) end
+			-- A closed chat with a known session can be reopened; old history stays inert.
+			local resumable = type(entry.session) == "string" and entry.session ~= ""
+			local node = el(if resumable then "button" else "div", "cp-agent cp-closed" .. (if resumable then " cp-resumable" else ""), {
+				el("div", "cp-agent-top", {
+					text("cp-label", entry.name),
+					el("div", "cp-agent-status", {text("cp-dot", "●"), text("cp-state", "Closed")}),
+				}),
+				el("div", "cp-agent-bottom", detail),
+			}, nil, if resumable then "resume-session:" .. entry.session else nil)
+			-- Stable identity so the shell fingerprint (and with it the patch path) survives
+			-- other cards opening or closing.
+			node.p.key = "closed:" .. closed_key
+			node.p.title = entry.name .. (if entry.cwd and entry.cwd ~= "" then "\n" .. entry.cwd else "") .. (if resumable then "\n· Click to reopen session" else "")
+			if resumable then node.p.aria = entry.name .. " · Click to reopen session" end
+			return node
+		end)
 		table.insert(agents, card)
 	end
 	if #agents == 0 then table.insert(agents, el("p", "cp-empty", nil, "No agents detected\nAgents appear here when opened in Tern.")) end
@@ -301,10 +386,15 @@ function M.render(ui, data, focused)
 		table.insert(tools, broom)
 	end
 	table.insert(tools, ui.button("",{icon="bell",title="Tern needs you",aria="Tern needs you",variant="quiet",size="sm",actions={click="inbox"}}))
+	-- The counts change with almost every agent transition; memoizing them keeps the shell
+	-- fingerprint stable so those transitions travel as a small card patch instead of a full tree.
+	local summary = cached(cache, "summary:", tostring(data.running) .. "/" .. tostring(data.waiting), function()
+		return el("div", "cp-summary", {text("cp-live", tostring(data.running) .. " running"),
+			text("cp-waiting-count", tostring(data.waiting) .. " need input")})
+	end)
 	local agents_section = {
 		el("div", "cp-heading", {text("", "Agents"), el("div","cp-agent-header-tools",tools)}),
-		el("div", "cp-summary", {text("cp-live", tostring(data.running) .. " running"),
-			text("cp-waiting-count", tostring(data.waiting) .. " need input")}),
+		summary,
 		el("div", "cp-agents", agents),
 	}
 	local launchers = {}
@@ -336,40 +426,56 @@ function M.render(ui, data, focused)
 		local limits = providers[provider]
 		-- Stable window order: short window, long window, then additional quota.
 		table.sort(limits,function(a,b) return a.label < b.label end)
-		local segments = {}
-		local svg = arc.svg(limits)
-		local uri = percent_encode(svg)
-		table.insert(quota_sheets,'.switchboard .cp-quota-' .. provider_index .. ' .cp-ring { background-image:url("data:image/svg+xml,' .. uri .. '"); }')
-		local logo = PROVIDER_LOGOS[provider]
-		if logo then table.insert(segments,icon(logo,"cp-ring-monogram"))
-		else table.insert(segments,text("cp-ring-monogram",string.upper(string.sub(PROVIDER_NAMES[provider] or provider,1,1)))) end
 		local low = false
 		for _, q in limits do if not q.stale and q.remaining < 0.1 then low=true; break end end
-		if low then table.insert(segments,ui.el("span",{class="cp-limit-alert",text="!",attrs={["aria-label"]="Low quota"}})) end
-		local details = {}
-		for _, q in limits do
-			local percent = math.floor(q.remaining*100+0.5)
-			local reading=if q.stale then "Updating…" else tostring(percent) .. "% left"
-			table.insert(details,el("div","cp-quota-detail" .. (if not q.stale and q.remaining < 0.1 then " cp-quota-detail-low" else ""),{
-				el("div","cp-quota-detail-head",{text("cp-label",q.label),text("cp-quota-percent",reading)}),
-				ui.node("meter",{value=q.remaining,size="sm",role="switchboard.quota-meter",tone=if not q.stale and q.remaining < 0.1 then "bad" elseif q.remaining < 0.25 then "warn" else "accent",aria=q.label .. " " .. percent .. "% remaining"}),
-				text("cp-quota-reset",if q.stale then "Updating…" else (usage.reset_countdown(q.reset_at,data.quota_now) or "Reset time not reported")),
-			}))
+		-- The reset text is a minute countdown; only its change should rebuild the popover.
+		local reset_text = {}
+		local parts = {"quota", tostring(provider_index), provider, tostring(low)}
+		for i, q in limits do
+			reset_text[i] = if q.stale then "Updating…" else (usage.reset_countdown(q.reset_at,data.quota_now) or "Reset time not reported")
+			parts[#parts + 1] = join(q.label, q.remaining, q.stale, q.reset_at, reset_text[i])
 		end
-		local heading = {text("cp-label",PROVIDER_NAMES[provider] or provider),text("cp-quota-source","OMP · LOCAL")}
-		if logo then table.insert(heading,1,icon(logo,"cp-quota-logo")) end
-		local popup = el("div","cp-quota-popover cp-quota-popover-" .. provider_index .. (if low then " cp-popup-low" else ""),{
-			el("div","cp-quota-popover-head",heading),
-			text("cp-quota-note",if low then "Low quota · less than 10% remains" else "Available quota"),
-			el("div","cp-quota-details",details),
-			text("cp-quota-footnote","Click to refresh provider limits"),
-		})
-		local ring = ui.el("button",{class="cp-quota cp-quota-" .. provider_index .. (if low then " cp-quota-low" else ""),attrs={["aria-label"]=(PROVIDER_NAMES[provider] or provider) .. " quota windows" .. (if low then ": low quota" else "")},actions={click="usage"}}, {
-			el("div","cp-ring",segments),
-		})
-		table.insert(quota_nodes,ring)
-		table.insert(quota_popovers,popup)
-		table.insert(quota_sheets,".switchboard:has(.cp-quota-" .. provider_index .. ":hover) .cp-quota-popover-" .. provider_index .. ", .switchboard:has(.cp-quota-" .. provider_index .. ":focus-visible) .cp-quota-popover-" .. provider_index .. " { display:flex; flex-direction:column; gap:10px; }")
+		local cluster = cached(cache, "quota:" .. tostring(provider_index), table.concat(parts, SEP), function()
+			local segments = {}
+			local svg = arc.svg(limits)
+			local uri = percent_encode(svg)
+			local style = '.switchboard .cp-quota-' .. provider_index .. ' .cp-ring { background-image:url("data:image/svg+xml,' .. uri .. '"); }'
+			local logo = PROVIDER_LOGOS[provider]
+			if logo then table.insert(segments,icon(logo,"cp-ring-monogram"))
+			else table.insert(segments,text("cp-ring-monogram",string.upper(string.sub(PROVIDER_NAMES[provider] or provider,1,1)))) end
+			if low then table.insert(segments,ui.el("span",{class="cp-limit-alert",text="!",attrs={["aria-label"]="Low quota"}})) end
+			local details = {}
+			for i, q in limits do
+				local percent = math.floor(q.remaining*100+0.5)
+				local reading=if q.stale then "Updating…" else tostring(percent) .. "% left"
+				table.insert(details,el("div","cp-quota-detail" .. (if not q.stale and q.remaining < 0.1 then " cp-quota-detail-low" else ""),{
+					el("div","cp-quota-detail-head",{text("cp-label",q.label),text("cp-quota-percent",reading)}),
+					ui.node("meter",{value=q.remaining,size="sm",role="switchboard.quota-meter",tone=if not q.stale and q.remaining < 0.1 then "bad" elseif q.remaining < 0.25 then "warn" else "accent",aria=q.label .. " " .. percent .. "% remaining"}),
+					text("cp-quota-reset",reset_text[i]),
+				}))
+			end
+			local heading = {text("cp-label",PROVIDER_NAMES[provider] or provider),text("cp-quota-source","OMP · LOCAL")}
+			if logo then table.insert(heading,1,icon(logo,"cp-quota-logo")) end
+			local popup = el("div","cp-quota-popover cp-quota-popover-" .. provider_index .. (if low then " cp-popup-low" else ""),{
+				el("div","cp-quota-popover-head",heading),
+				text("cp-quota-note",if low then "Low quota · less than 10% remains" else "Available quota"),
+				el("div","cp-quota-details",details),
+				text("cp-quota-footnote","Click to refresh provider limits"),
+			})
+			local ring = ui.el("button",{class="cp-quota cp-quota-" .. provider_index .. (if low then " cp-quota-low" else ""),attrs={["aria-label"]=(PROVIDER_NAMES[provider] or provider) .. " quota windows" .. (if low then ": low quota" else "")},actions={click="usage"}}, {
+				el("div","cp-ring",segments),
+			})
+			return {
+				ring=ring,
+				popup=popup,
+				style=style,
+				hover=".switchboard:has(.cp-quota-" .. provider_index .. ":hover) .cp-quota-popover-" .. provider_index .. ", .switchboard:has(.cp-quota-" .. provider_index .. ":focus-visible) .cp-quota-popover-" .. provider_index .. " { display:flex; flex-direction:column; gap:10px; }",
+			}
+		end)
+		table.insert(quota_nodes,cluster.ring)
+		table.insert(quota_popovers,cluster.popup)
+		table.insert(quota_sheets,cluster.style)
+		table.insert(quota_sheets,cluster.hover)
 	end
 
 	if show_quotas and data.quota_state then table.insert(quota_nodes,text("cp-quota-state",data.quota_state)) end
