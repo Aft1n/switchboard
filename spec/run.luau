@@ -14,6 +14,7 @@ require("../project_colors_spec")
 require("../section_sizes_spec")
 require("../terminal_agents_spec")
 require("../usage_spec")
+require("../vibe_spec")
 require("../workspace_order_spec")
 require("../workspace_recency_spec")
 

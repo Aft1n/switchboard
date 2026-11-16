@@ -70,6 +70,17 @@ function M.scan(messages,previous,now,wall)
        if id and not string.find(id,"^bg_") and type(job.status)=="string" then put({id=id,status=job.status},false) end
       end
      end
+    elseif type(tool)=="table" and type(tool.name)=="string" and string.find(string.lower(tool.name),"^vibe_")
+     and type(tool.metadata)=="table" and type(tool.metadata.screens)=="table" then
+     -- OMP vibe mode drives named sessions with vibe_spawn/vibe_wait/vibe_send; every result lists
+     -- all screens with their current state, so the latest result per id wins.
+     for _,screen in tool.metadata.screens do
+      if type(screen)=="table" then
+       put({id=screen.id,description=screen.id,output=screen.turnMessage,model=screen.model,
+        stage=screen.lastIntent or screen.currentTool,
+       status=if screen.killed==true then "aborted" else screen.state},false)
+      end
+     end
     end
    end
   end

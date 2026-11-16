@@ -59,7 +59,7 @@ Quota rings and OMP agents need OMP installed. Other coding harnesses are detect
 - Rows move only on real state changes (first seen, running, needs input, finished). Transcript updates never reorder them, and agents that need input stay pinned at the top.
 - Closed agents stay in the list, dimmed. Click one with a session id to reopen it with `omp --resume`. The broom in the Agents header clears closed entries; it never touches running agents.
 - Subagents: a parent with children shows a footer with the child count (and how many are running). Expand it to see the children indented beneath. Click a child to focus its thread in the parent's agent pane, and "Back to the main session" returns. Children are found from OMP task ids, never by name.
-- `/new` in OMP starts a session in the same pane. Switchboard detects the swap, moves that pane into a new tab named "New chat" until OMP titles it, and resumes the previous session in its old tab. Both stay open until you close one.
+- `/new` in OMP starts a new session in the same pane. Switchboard keeps the pane where it is and moves the previous session to Closed, where a click reopens it with `omp --resume`.
 - For a guaranteed parallel chat, use `alt+shift+n`: it starts a fresh omp process in a new tab and never touches the chat you are in.
 
 ### Other harnesses

@@ -76,22 +76,6 @@ eq(sessions.new_session({session="A",cwd="/p"},{session="B",cwd="/q"}),false)
 eq(sessions.new_session(nil,{session="B",cwd="/p"}),false) -- first mapping after reload/window start
 eq(sessions.new_session({session="",cwd="/p"},{session="B",cwd="/p"}),false)
 
--- The window's move request list: only panes with a replaced session.
-local moves=sessions.new_sessions(
-	{["7"]={session="A",cwd="/p",title="old"},["8"]={session="C",cwd="/q",title="keep"}},
-	{["7"]={session="B",cwd="/p",title="new"},["8"]={session="C",cwd="/q",title="keep"},["9"]={session="D",cwd="/r",title="first"}})
-eq(#moves,1)
-eq(moves[1],"7")
-eq(#sessions.new_sessions({},{["7"]={session="B",cwd="/p"}}),0) -- first mapping is not a move
-eq(#sessions.new_sessions(nil,{["7"]={session="B",cwd="/p"}}),0)
-
--- Resume command: absolute local binary or remote `omp`, quoted, id validated.
-eq(sessions.resume_command("/opt/homebrew/bin/omp","01a1daba-5f59-7409"),'"/opt/homebrew/bin/omp" --resume 01a1daba-5f59-7409')
-eq(sessions.resume_command("omp","S1"),'"omp" --resume S1')
-eq(sessions.resume_command("omp","bad/id"),nil)
-eq(sessions.resume_command("omp",nil),nil)
-eq(sessions.resume_command("","S1"),nil)
-
 -- Malformed or truncated output yields only valid pairs, never an error.
 local truncated='  "panes": [\n    {\n      "pane": 8,\n      "cwd": "/a",\n      "omp_session_file": "/a/2026_x.jsonl"'
 eq(#sessions.parse(truncated),0)

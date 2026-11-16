@@ -1,8 +1,7 @@
 -- Pure parser for `tern inspect --json`: the durable omp session behind each pane.
 -- Tern pane ids are ephemeral (reused by other agents, lost on restore); the
 -- session file id is the identity history keeps across relaunches. Titles are
--- parsed too: OMP /new swaps the session in the same pane and the title change
--- is what makes the swap visible before the 30 s fallback.
+-- parsed too: a title change is how a /new swap in the same pane is spotted early.
 local M = {}
 
 local function unescape(text)
@@ -58,24 +57,6 @@ function M.new_session(old, new)
 	local before, after = old.session, new.session
 	if type(before) ~= "string" or before == "" or type(after) ~= "string" or after == "" then return false end
 	return before ~= after and (old.cwd or "") == (new.cwd or "")
-end
-
--- Pane keys whose session started over in the same cwd, for the window to move.
-function M.new_sessions(old, new)
-	local out = {}
-	if type(old) ~= "table" or type(new) ~= "table" then return out end
-	for pane, mapping in new do
-		if M.new_session(old[pane], mapping) then table.insert(out, pane) end
-	end
-	table.sort(out)
-	return out
-end
-
--- Shell command that resumes `session`, nil when the id or executable is unsafe.
-function M.resume_command(executable, session)
-	if type(executable) ~= "string" or executable == "" then return nil end
-	if type(session) ~= "string" or not string.match(session, "^[%w%-]+$") then return nil end
-	return string.format("%q --resume %s", executable, session)
 end
 
 -- Same mapping as `parse`, from an already decoded `tern inspect --json` value.

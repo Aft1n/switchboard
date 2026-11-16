@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2
+
+- OMP vibe workers from `vibe_spawn`/`vibe_wait` results appear in the agent card's subagent list, read from the session file at most every 4 s; clicking one opens its thread.
+- `/new` in OMP replaces the session in the same pane again: no tab moves, no resume. The previous session goes to Closed and the pane's card resets.
+- Title, cwd and focus events only mark the window dirty; the next poll refreshes it and an idle heartbeat refreshes it every 5 s, which stops Tern's 50 ms budget pauses that left cards on "Loading activity…".
+
 ## 0.1.1
 
 - Fix agent cards stuck on "loading" (one re-reading pane starved the rest) and show an idle agent's last real steps when its newest turn used no tools.

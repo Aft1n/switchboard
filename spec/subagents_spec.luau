@@ -428,4 +428,23 @@ h.suite("native subagent navigation",function(s)
   s.eq(subagents.focus_event(nil,"Review"),nil)
  end)
 end)
+s.test("vibe sessions become subagents and the latest result wins", function()
+ local rows=subagents.scan({
+  {role="assistant",tools={{name="vibe_spawn",metadata={screens={
+   {id="perf-runtime",cli="good",state="running",turnMessage="Audit navigation"},
+   {id="perf-bundle",cli="good",state="running"},
+  }}}}},
+  {role="assistant",tools={{name="vibe_wait",metadata={screens={
+   {id="perf-runtime",state="idle",model="anthropic/claude-haiku-5-5:high",lastIntent="Writing report"},
+   {id="perf-bundle",state="running",killed=true},
+  }}}}},
+ },nil)
+ local by={}
+ for _,row in rows do by[row.id]=row end
+ s.eq(#rows,2)
+ s.eq(by["perf-runtime"].state,"idle")
+ s.eq(by["perf-runtime"].title,"perf-runtime")
+ s.eq(by["perf-runtime"].step,"Writing report")
+ s.eq(by["perf-bundle"].state,"failed")
+end)
 return true

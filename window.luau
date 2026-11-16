@@ -86,8 +86,23 @@ local project_colors_store=tern.kv.get("project_colors") or {next=1,colors={}}
 -- 36 color rules for the project slots; switchboard.css only carries the 1..6 fallback.
 tern.css("project-colors", project_colors.css())
 local refresh
+local refresh_due, refresh_at = false, -math.huge
 local isolation_from_path
 local workspace_recency=require("./workspace_recency")
+local vibe=require("./vibe")
+-- Vibe workers live only in tool results the transcript API strips, so the session file is tailed:
+-- one read per pane in flight at a time, at most every 4 s; the last result is kept meanwhile.
+local vibe_state = {}
+local function read_vibe(pane, file)
+	local st = vibe_state[pane]
+	st.busy, st.at = true, tern.now()
+	local ok = pcall(tern.process.run, vibe.command(file), {timeout_ms = 4000}, function(result)
+		st.busy, st.messages = false, vibe.messages(result.stdout, tern.json.decode)
+		if activity[pane] then activity[pane].dirty = true end
+	end)
+	if not ok then st.busy = false end
+end
+
 local workspace_order_mod=require("./workspace_order")
 local workspace_stamps=tern.kv.get("workspace_recency") or {}
 local workspace_order=tern.kv.get("workspace_order") or {}
@@ -194,6 +209,7 @@ local function sample(cx, infos, read)
 	for pane in activity do
 		if not seen[pane] and now-(activity[pane].last_seen or now)>30000 then activity[pane]=nil; recency.panes[string.format("%.0f",pane)]=nil; changed=true end
 	end
+	for pane in vibe_state do if not activity[pane] then vibe_state[pane] = nil end end
 	if changed then tern.kv.set("agent_recency",recency) end
 	if not read then return end
 	local pick=progress.next_read(activity,now,focused)
@@ -203,6 +219,13 @@ local function sample(cx, infos, read)
 			return cx.agents:transcript(pick, {last=60})
 		end)
 		if ok then
+			local session = pane_sessions[tostring(pick)]
+			if vibe.used(messages) and session and session.file then
+				local st = vibe_state[pick] or {at = -math.huge, busy = false, messages = {}}
+				vibe_state[pick] = st
+				for _, message in st.messages do table.insert(messages, message) end
+				if not st.busy and now - st.at >= 4000 then read_vibe(pick, session.file) end
+			end
 			local children=subagents.clean(subagents.scan(messages,record.subagents,now,wall),wall)
 			if tern.json.encode(children)~=tern.json.encode(record.subagents) then
 			 subagent_rows[string.format("%.0f",pick)]=children
@@ -774,8 +797,6 @@ end
 -- reports no session is remembered per title/cwd so a shell at a reused pane id
 -- never triggers an inspect every refresh.
 local session_misses={}
-local moved_sessions={}
-local new_tab_titles={}
 local function refresh_sessions(cx, agents, titles)
 	if session_busy then return end
 	local now=tern.now()
@@ -808,15 +829,12 @@ local function refresh_sessions(cx, agents, titles)
 		local parsed = (decoded_ok and agent_sessions.from_decoded(decoded)) or agent_sessions.parse(result.stdout)
 		local at=tern.now()
 		for _,mapping in parsed do mapping.at=at end
-		for key in moved_sessions do if not nextCx.session:pane(tonumber(key) or key) then moved_sessions[key]=nil end end
-		-- Same pane with a different session in the same cwd is OMP /new.
-		for _,key in agent_sessions.new_sessions(old,parsed) do
-			local new=parsed[key]
-			if moved_sessions[key]~=new.session then
-				local pane=tonumber(key)
-				if not pane or not nextCx.session:pane(pane) then continue end
-				-- The pane id survived OMP /new, so its old transcript snapshot,
-				-- state, subagents and ordering must not leak into the new session.
+		-- OMP /new swaps the session inside the same pane: the pane keeps its place, so
+		-- its old transcript snapshot, state, subagents and ordering must not leak into
+		-- the new session. The old session reaches closed history through agent_history.
+		for key,mapping in parsed do
+			local pane=tonumber(key)
+			if pane and agent_sessions.new_session(old[key],mapping) and nextCx.session:pane(pane) then
 				activity[pane]=nil
 				status_reads[pane]=nil
 				completed_signals[pane]=nil
@@ -826,70 +844,6 @@ local function refresh_sessions(cx, agents, titles)
 					tern.kv.set("agent_recency",recency)
 				end
 				tern.kv.set("subagent_rows",subagent_rows)
-				local old_mapping=old[key]
-				local old_tab=nextCx.session:tab_of(pane)
-				local old_sidebar=old_tab and pending[old_tab]
-				local only=0
-				if old_tab then
-					for _,item in nextCx.session:panes() do
-						if item.tab==old_tab and not owned[item.pane] then only+=1 end
-					end
-				end
-				-- The old session keeps running unless history says it was not live.
-				local old_session=nil
-				local candidate=old_mapping and old_mapping.session
-				if candidate and string.match(candidate,"^[%w%-]+$") then
-					agent_history=tern.kv.get("agent_history") or agent_history
-					for _,entry in agent_history do
-						if entry.session==candidate and entry.live then old_session=candidate; break end
-					end
-				end
-				if not old_session and old_tab and only==1 and old_sidebar then
-					-- The old session is gone: a tab holding just this agent and its
-					-- sidebar closes with the move instead of restoring emptied.
-					closing_empty_tabs[old_tab]=true
-					pcall(nextCx.layout.close,nextCx.layout,old_sidebar)
-				end
-				local focus=nextCx.session:focused()==pane
-				local moved_ok,tab=pcall(function()
-					return nextCx.layout:move_to_new_tab(pane,nil,{focus=focus})
-				end)
-				if not (moved_ok and tab) then continue end
-				-- Tern carries the old tab's name into the new tab. Give the new
-				-- session a neutral name until its own title arrives, so it never
-				-- keeps the previous session's label.
-				local pane_info=nextCx.session:pane(pane)
-				local current_title=pane_info and pane_info.title
-				local old_title=old_mapping and old_mapping.title
-				if current_title and old_title and current_title~=old_title then
-					pcall(function() nextCx.layout:name_tab(tab,nil) end)
-				else
-					pcall(function() nextCx.layout:name_tab(tab,"New chat") end)
-					new_tab_titles[tab]={pane=pane,old=old_title or current_title}
-				end
-				moved_sessions[key]=new.session
-				if old_session then
-					-- Resume the old session beside the old tab's sidebar so both
-					-- sessions stay active; never close the old pane's tab.
-					local executable=omp_cmd(host_of(nextCx,"panes",pane))
-					local command=agent_sessions.resume_command(executable,old_session)
-					local resumed=false
-					if command and old_sidebar and nextCx.session:pane(old_sidebar)
-						and nextCx.session:tab_of(old_sidebar)==old_tab then
-						local split_ok,split_pane=pcall(function()
-							return nextCx.layout:split(old_sidebar,"right",{cwd=old_mapping.cwd or "",command=command},{focus=false})
-						end)
-						if split_ok and split_pane then
-							pcall(placement.size,nextCx,old_tab,old_sidebar,sidebar_share)
-							resumed=true
-						end
-					end
-					if not resumed then
-						pcall(function()
-							nextCx.layout:new_tab({cwd=old_mapping.cwd or "",command=command},{focus=false})
-						end)
-					end
-				end
 			end
 		end
 		pane_sessions=parsed
@@ -909,17 +863,6 @@ local last_infos
 local pushed_at = {}
 local function render(cx, infos, reveal_target, visible_only)
 	local tabs = cx.session:tabs()
-	-- A /new tab starts as "New chat"; hand it back to the pane label as soon as
-	-- OMP gives the new session its own title.
-	for tab,item in new_tab_titles do
-		local info=cx.session:pane(item.pane)
-		if not info then
-			new_tab_titles[tab]=nil
-		elseif info.title and (not item.old or info.title~=item.old) then
-			pcall(function() cx.layout:name_tab(tab,nil) end)
-			new_tab_titles[tab]=nil
-		end
-	end
 	local layouts = {}
 	for _, tab in tabs do layouts[tab.id] = cx.session:layout(tab.id) end
 	local actual_focus = reveal_target or cx.session:focused()
@@ -1931,8 +1874,14 @@ for _, event in {"focus", "pane_created", "pane_closed", "tab_created", "tab_clo
 			end
 		end
 		-- Keep the timer handle rooted in a recurring registered hook.
-		if clock then refresh(cx) end
+		if clock then refresh_due = true end
 	end)
+end
+-- Events only mark a refresh pending; a 5 s heartbeat covers changes no event announces.
+local function refresh_if_due(cx)
+	if not refresh_due and tern.now()-refresh_at<5000 then return end
+	refresh_due, refresh_at = false, tern.now()
+	refresh(cx, false)
 end
 local function poll(cx)
  clock = tern.timer(1500, poll)
@@ -1950,8 +1899,8 @@ local function poll(cx)
 		local content=false
 		if focus and owned[focus] and tab then
 			for _,pane in cx.session:panes() do if pane.tab==tab and not owned[pane.pane] then content=true;break end end
-			if not content then closed_tabs_to_check[tab]=true;jump_after_close(cx) else refresh(cx,false) end
-		else refresh(cx,false) end
+			if not content then closed_tabs_to_check[tab]=true;jump_after_close(cx) else refresh_if_due(cx) end
+		else refresh_if_due(cx) end
 		read_usage(cx)
 		scan_terminals()
 	end

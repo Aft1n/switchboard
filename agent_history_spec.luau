@@ -60,6 +60,16 @@ eq(stale[2].name,"Old agent")
 eq(stale[2].session,"S")
 eq(#history.closed(stale),1)
 
+-- OMP /new swaps the session inside the same pane: the old session becomes closed history.
+local swapped={}
+history.update(swapped,{{pane=7,name="Chat",project="p",cwd="/p"}},10,{["7"]={session="A",cwd="/p"}})
+history.update(swapped,{{pane=7,name="Chat",project="p",cwd="/p"}},20,{["7"]={session="B",cwd="/p"}})
+eq(#swapped,2)
+eq(swapped[1].session,"B")
+eq(swapped[2].session,"A")
+eq(swapped[2].live,false)
+eq(history.closed(swapped)[1].session,"A")
+
 -- The host display name is metadata, kept for reopening: recorded when the live
 -- agent carries a host, preserved when a later update carries none, and only
 -- rewritten when it actually changes.
