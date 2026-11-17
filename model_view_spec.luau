@@ -559,4 +559,10 @@ eq(#agent_rows,1)
 eq(#class_nodes(class_nodes(agent_rows[1],"cp-card-agent901")[1],"cp-agent-row"),0)
 eq(#class_nodes(class_nodes(agent_rows[1],"cp-card-agent901")[1],"cp-agent-parent-row"),0)
 print("agent cards carry a sibling close button")
+-- A session listed twice in history must render once: Tern fails the whole view on duplicate child keys.
+local dup_data=table.clone(slot_data)
+dup_data.closed={{session="s9",name="Old",project="api"},{session="s9",name="Old again",project="api"}}
+local dup_tree=view.render(stub,dup_data,901,nil)
+eq(#class_nodes(dup_tree,"cp-closed"),1)
+print("duplicate closed sessions render once")
 return true

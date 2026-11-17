@@ -369,7 +369,12 @@ function M.render(ui, data, focused, cache)
 	for _, a in data.agents do table.insert(agents,render_agent(a)) end
 	-- Agents that were seen and have since closed stay in the list, dimmed, until the broom clears them.
 	local closed = if show_closed then data.closed or {} else {}
+	local seen_closed = {}
 	for i, entry in closed do
+	-- One session can sit in history twice (resumed under a new pane); Tern rejects duplicate child keys.
+	local dup_key = tostring(entry.session or entry.pane or i)
+	if seen_closed[dup_key] then continue end
+	seen_closed[dup_key] = true
 		local color_class = entry.project and project_colors.class((data.project_colors or {})[entry.project]) or "-"
 		local signature = join("closed", entry.session, entry.name, entry.project, entry.model, entry.pane, entry.cwd, color_class)
 		-- Identity, not list position: a closed card keeps its slot when others open or close, so

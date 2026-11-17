@@ -1,5 +1,6 @@
 # Changelog
 
+## 0.1.6  - Fix the "duplicate child key closed:…" popup: a session recorded twice in history now merges to its oldest entry, and the sidebar renders each closed session once. 
 ## 0.1.5
 
 - Agent cards have a close x on hover that closes the agent's tab, like the x on workspace tab rows. Right-click "Close block" on the sidebar still closes the sidebar itself: Tern's menu names no row.

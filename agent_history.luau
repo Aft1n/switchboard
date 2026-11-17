@@ -94,6 +94,26 @@ function M.update(list, agents, now, sessions)
 			changed = true
 		end
 	end
+	-- Closed entries never reach `match`, so a session recorded twice (a resume under a new pane) merges here:
+	-- the oldest sight stays, as in `match`.
+	local kept = {}
+	for index = #list, 1, -1 do
+		local session = list[index].session
+		if session then
+			if kept[session] then
+				local keeper = kept[session]
+				if (list[index].at or 0) < (keeper.entry.at or 0) then
+					table.remove(list, keeper.index)
+					kept[session] = {entry=list[index], index=index}
+				else
+					table.remove(list, index)
+				end
+				changed = true
+			else
+				kept[session] = {entry=list[index], index=index}
+			end
+		end
+	end
 	while #list > CAP do table.remove(list); changed = true end
 	return changed
 end

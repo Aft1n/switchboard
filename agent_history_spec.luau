@@ -115,5 +115,11 @@ history.update(capped,batch,40)
 eq(#capped,50)
 eq(capped[1].pane,60)
 eq(capped[50].pane,11)
+-- A session recorded twice while closed merges to its oldest sight.
+local twice={{pane=2,name="New",project="p",cwd="/c",session="s1",at=20},{pane=1,name="Old",project="p",cwd="/c",session="s1",at=10},{pane=3,name="Other",project="p",cwd="/d",session="s2",at=15}}
+eq(history.update(twice,{},30),true)
+eq(#twice,2)
+eq(twice[1].at==10 or twice[2].at==10,true)
+eq(#history.closed(twice),2)
 print("agent history checks passed")
 return true
