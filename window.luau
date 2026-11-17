@@ -948,6 +948,22 @@ local function project_name(path, root, workspace)
 	return (string.match(string.sub(path, #shared + 2), "^[^/]+")) or workspace
 end
 
+-- tern.ui.el/node copy their whole child subtree on every call (cost grows with the subtree, so a container over
+-- ~60 cards, nested ~8 deep, burned 30-185 ms of Lua per render and tripped the 50 ms budget). Build the node
+-- without children, then attach them by reference: same node shape, no copy.
+local shallow_ui = setmetatable({
+	el = function(tag, props, children)
+		local node = tern.ui.el(tag, props)
+		if children ~= nil then node.c = children end
+		return node
+	end,
+	node = function(kind, props, children)
+		local node = tern.ui.node(kind, props)
+		if children ~= nil then node.c = children end
+		return node
+	end,
+}, {__index = tern.ui})
+
 local function render(cx, infos, reveal_target, visible_only)
 	local tabs = cx.session:tabs()
 	local layouts = {}
@@ -1107,7 +1123,7 @@ local function render(cx, infos, reveal_target, visible_only)
 	reveal_intent = nil
 	subtree_cache.begin()
 	render_seq += 1
-	local tree, sheet = view.render(tern.ui, data, highlight, subtree_cache)
+	local tree, sheet = view.render(shallow_ui, data, highlight, subtree_cache)
 	-- Tern clears plugin sheets on a style reload while the window VM keeps running, so
 	-- keep re-asserting them, but only when the sheet changed or after a minute: applying
 	-- identical CSS forces a style recalculation over the whole window on every render.
@@ -1717,14 +1733,17 @@ local function new_project_tab(cx,project,path)
 	project_paths[string.format("%.0f",project)]=path
 	tern.kv.set("project_paths",project_paths)
 	selected_workspace=nil;selected_content=nil
-	changing=true
-	local ok,err=pcall(function()
-		cx.sessions:switch(project)
-		cx.layout:new_tab({cwd=path})
-	end)
-	changing=false
-	if not ok then cx:toast("error","Could not open project tab",tostring(err)) end
-	refresh(cx)
+	local function open(c)
+		changing=true
+		local ok,err=pcall(function() c.layout:new_tab({cwd=path}) end)
+		changing=false
+		if not ok then c:toast("error","Could not open project tab",tostring(err)) end
+		refresh(c)
+	end
+	if cx.sessions:current().id==project then open(cx); return end
+	-- A session switch applies on the next frame; a tab opened in the same callback lands in the old workspace.
+	pcall(cx.sessions.switch,cx.sessions,project)
+	tern.timer(0,function(nextCx) if nextCx then open(nextCx) end end)
 end
 tern.override("new_tab",function(cx)
 	if not selected_workspace then return false end
@@ -1857,6 +1876,32 @@ for index=1,9 do
 	tern.bind("alt+shift+" .. index,"plugin.switchboard.agent-" .. index)
 end
 
+-- The workspace whose panes or saved project folder best match `path`: an exact folder wins, then a parent or
+-- child folder. Nil when nothing matches (the caller keeps the focused workspace).
+local function workspace_for_path(cx, path)
+	if type(path) ~= "string" or path == "" then return nil end
+	local function norm(value) return string.lower((string.gsub(value, "/+$", ""))) end
+	local wanted = norm(path)
+	local tab_session = {}
+	for _, tab in cx.session:tabs() do tab_session[tab.id] = tab.session end
+	local score = {}
+	local function consider(session, folder)
+		if not session or type(folder) ~= "string" or folder == "" then return end
+		local seen = norm(folder)
+		local value = if seen == wanted then 2 elseif under(seen, wanted) or under(wanted, seen) then 1 else 0
+		if value > (score[session] or 0) then score[session] = value end
+	end
+	for _, pane in cx.session:panes() do
+		if not owned[pane.pane] then consider(tab_session[pane.tab], pane.cwd) end
+	end
+	for _, session in cx.session:sessions() do consider(session.id, project_paths[string.format("%.0f", session.id)]) end
+	local current = cx.sessions:current().id
+	local best, best_score
+	for session, value in score do
+		if not best_score or value > best_score or (value == best_score and session == current) then best, best_score = session, value end
+	end
+	return best
+end
 local function sidebar_action(ev, cx)
 	if ev.owner ~= PLUGIN_ID then return false end
 	if ev.act == "switchboard.sidebar.resync" then
@@ -1877,7 +1922,20 @@ local function sidebar_action(ev, cx)
 		for _,item in cx.hosts:list() do if item.name==entry.host then host=item; break end end
 		if not use_host(cx,host) then return true end
 		-- A remote tab runs its command through that host's shell, so it resolves `omp` itself.
-		local tab=cx.layout:new_tab({cwd=entry.cwd,command=string.format("%q --resume %s",omp_cmd(host),resume)},{focus=true})
+		-- Open it in the workspace that owns the folder, not wherever focus happens to be.
+		local owner=workspace_for_path(cx,entry.cwd)
+		local launch={cwd=entry.cwd,command=string.format("%q --resume %s",omp_cmd(host),resume)}
+		if owner and owner~=cx.sessions:current().id then
+			-- A session switch applies on the next frame; a tab opened in the same callback lands in the old workspace.
+			pcall(cx.sessions.switch,cx.sessions,owner)
+			tern.timer(0,function(nextCx)
+				if not nextCx then return end
+				if not nextCx.layout:new_tab(launch,{focus=true}) then nextCx:toast("error","Could not resume " .. (entry.name or resume)) end
+				refresh(nextCx)
+			end)
+			return true
+		end
+		local tab=cx.layout:new_tab(launch,{focus=true})
 		if not tab then cx:toast("error","Could not resume " .. (entry.name or resume)); return true end
 		refresh(cx)
 		return true

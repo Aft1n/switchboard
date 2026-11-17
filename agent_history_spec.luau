@@ -121,5 +121,26 @@ eq(history.update(twice,{},30),true)
 eq(#twice,2)
 eq(twice[1].at==10 or twice[2].at==10,true)
 eq(#history.closed(twice),2)
+-- Tern reuses pane ids: a new agent on a closed entry's pane+cwd must not take over that session's record.
+local reuse={{pane=5,name="Old chat",project="p",cwd="/c",session="A",at=1,live=false}}
+history.update(reuse,{{pane=5,name="omp",project="p",cwd="/c"}},50,{})
+eq(#reuse,2)
+local kept_old
+for _,entry in reuse do if entry.session=="A" then kept_old=entry end end
+assert(kept_old and kept_old.live==false,"closed session A keeps its record")
+history.update(reuse,{{pane=5,name="omp",project="p",cwd="/c"}},60,{["5"]={session="B",cwd="/c"}})
+eq(kept_old.session,"A")
+eq(#history.closed(reuse),1)
+
+local twins={
+	{pane=9,name="Resumed chat",project="p",cwd="/c/",at=30,live=true},
+	{pane=2,name="Resumed chat",project="p",cwd="/c",session="S",at=5,live=false},
+}
+eq(history.update(twins,{{pane=9,name="Resumed chat",project="p",cwd="/c/"}},70,{}),true)
+eq(#twins,1)
+eq(twins[1].session,"S")
+eq(twins[1].live,true)
+eq(twins[1].pane,9)
+eq(#history.closed(twins),0)
 print("agent history checks passed")
 return true

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.7
+
+- Renders no longer trip Tern's 50 ms budget: `tern.ui.el` copies its whole child subtree on every call, so the nested containers over all cards cost 30-185 ms of Lua per render. Containers now take their children by reference. This was why a resumed or new session sometimes appeared only after switching tabs.
+- A session no longer shows twice (live and closed): a record made before the session id was known merges into the session record with the same name and folder, and every duplicate session is merged on update.
+- A new agent on a reused pane id and folder no longer takes over a closed session's history record.
+- Tabs opened for a project or a resumed session no longer land in the previous workspace: the workspace switch applies a frame late, so the tab now opens on the next tick. Resume also opens in the workspace that owns the session's folder.
+
 ## 0.1.6
 
 - Fix the "duplicate child key closed:…" popup: a session recorded twice in history now merges to its oldest entry, and the sidebar renders each closed session once.

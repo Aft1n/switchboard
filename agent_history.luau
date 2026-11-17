@@ -27,7 +27,8 @@ end
 -- {session=...,cwd=...} from tern inspect. Returns true when `list` changed.
 function M.update(list, agents, now, sessions)
 	local changed = false
-	for _,entry in list do entry.live = false end
+	local was_live = {}
+	for _,entry in list do was_live[entry] = entry.live == true; entry.live = false end
 	local function session_of(agent)
 		local mapping = sessions and sessions[tostring(agent.pane)]
 		-- A mapping for a reused pane describes that pane only while its cwd holds.
@@ -51,7 +52,8 @@ function M.update(list, agents, now, sessions)
 		end
 		local cwd = agent.cwd or ""
 		for _,entry in list do
-			if entry.pane == agent.pane and (entry.cwd or "") == cwd then
+			-- Tern reuses pane ids: a closed entry on the same pane+cwd is another agent's record, not this one's.
+			if was_live[entry] and entry.pane == agent.pane and (entry.cwd or "") == cwd then
 				if session and entry.session and entry.session ~= session then return nil end
 				return entry
 			end
@@ -94,24 +96,52 @@ function M.update(list, agents, now, sessions)
 			changed = true
 		end
 	end
+	-- Merge `drop` into `keep` (a live record must stay live, on its current pane).
+	local function absorb(keep, drop)
+		if drop.live then keep.live = true; keep.pane = drop.pane end
+		if not keep.name and drop.name then keep.name = drop.name end
+	end
 	-- Closed entries never reach `match`, so a session recorded twice (a resume under a new pane) merges here:
 	-- the oldest sight stays, as in `match`.
 	local kept = {}
 	for index = #list, 1, -1 do
 		local session = list[index].session
 		if session then
-			if kept[session] then
-				local keeper = kept[session]
+			local keeper = kept[session]
+			if keeper then
 				if (list[index].at or 0) < (keeper.entry.at or 0) then
+					absorb(list[index], keeper.entry)
 					table.remove(list, keeper.index)
 					kept[session] = {entry=list[index], index=index}
 				else
+					absorb(keeper.entry, list[index])
 					table.remove(list, index)
 				end
 				changed = true
 			else
 				kept[session] = {entry=list[index], index=index}
 			end
+		end
+	end
+	-- A record made before the session was known (a resumed or restored pane inspects a few seconds late) is the
+	-- same agent as the session record with that name in that folder: without this the session shows twice, live and closed.
+	local function twin_key(entry)
+		if not entry.name then return nil end
+		return entry.name .. "\0" .. string.lower((string.gsub(entry.cwd or "", "/+$", "")))
+	end
+	local by_twin = {}
+	for _,entry in list do
+		local key = entry.session and twin_key(entry)
+		if key and not by_twin[key] then by_twin[key] = entry end
+	end
+	for index = #list, 1, -1 do
+		local entry = list[index]
+		local key = not entry.session and twin_key(entry)
+		local twin = key and by_twin[key]
+		if twin then
+			absorb(twin, entry)
+			table.remove(list, index)
+			changed = true
 		end
 	end
 	while #list > CAP do table.remove(list); changed = true end
