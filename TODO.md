@@ -1,7 +1,0 @@
-## Todo
-
-- [ ] todo
-
-## Doing
-
-## Done
