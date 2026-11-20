@@ -2027,12 +2027,12 @@ launchers.restore_tree = function(cx)
 			return
 		end
 		local session
-		pcall(function() session = nextCx.sessions:create({name=project.name,cwd=project.path}) end)
+		pcall(function() session = launchers.session_id(nextCx.sessions:create({name=project.name,cwd=project.path})) end)
 		projects += 1
 		seed(project)
 		tern.timer(0,function(later)
 			if not later then return end
-			if session and later.sessions:current().id ~= session.id then pcall(later.sessions.switch,later.sessions,session) end
+			if session and later.sessions:current().id ~= session then pcall(later.sessions.switch,later.sessions,session) end
 			-- The session switch applies a frame late; open its tabs after that.
 			tern.timer(0,function(final)
 				if not final then return end
@@ -2052,14 +2052,28 @@ tern.command({id="new-chat-tab", title="Switchboard: new chat in a new tab", run
 	for _,agent in cx.agents:list() do if agent.pane==focused then path=agent.cwd end end
 	local host=host_of(cx,"panes",focused)
 	if not use_host(cx,host) then return end
-	local tab=cx.layout:new_tab({cwd=path or tern.getenv("HOME") or "",command=omp_cmd(host)},{focus=true})
-	if not tab then cx:toast("error","Could not open a chat tab"); return end
-	-- The tab reaches the layout on the next frame; ordering it immediately is a no-op.
-	-- Keep the handle rooted or Lua collects the timer before it fires.
-	order_timer=tern.timer(100,function(nextCx)
-		order_timer=nil
-		if nextCx then pcall(function() nextCx.layout:order_tab(tab,1) end) end
-	end)
+	-- A new chat belongs to the workspace that owns its folder; open it there, creating one if needed.
+	local path=path or tern.getenv("HOME") or ""
+	local owner=workspace_for_path(cx,path)
+	local created=false
+	if not owner and path~="" and tern.fs.exists(path) then
+		local name=string.match(path,"([^/]+)/*$")
+		local ok,session=pcall(function() return launchers.session_id(cx.sessions:create({name=name,cwd=path})) end)
+		if ok and session then owner=session;created=true end
+	end
+	local function open(nextCx)
+		local tab=nextCx.layout:new_tab({cwd=path,command=omp_cmd(host)},{focus=true})
+		if not tab then nextCx:toast("error","Could not open a chat tab"); return end
+		-- The tab reaches the layout on the next frame; ordering it immediately is a no-op.
+		order_timer=tern.timer(100,function(later)
+			order_timer=nil
+			if later then pcall(function() later.layout:order_tab(tab,1) end) end
+		end)
+	end
+	if created or (owner and owner~=cx.sessions:current().id) then
+		pcall(cx.sessions.switch,cx.sessions,owner)
+		tern.timer(0,function(nextCx) if nextCx then open(nextCx) end end)
+	else open(cx) end
 end})
 tern.command({id="restore", title="Restore Tern sidebar", run=restore})
 tern.command({id="usage", title="Switchboard: refresh provider quotas", run=function(cx) read_usage(cx, true) end})
@@ -2109,11 +2123,24 @@ local function workspace_for_path(cx, path)
 	local wanted = norm(path)
 	local tab_session = {}
 	for _, tab in cx.session:tabs() do tab_session[tab.id] = tab.session end
+	local name_by_session = {}
+	for _, session in cx.session:sessions() do name_by_session[session.id] = string.lower(session.name or "") end
 	local score = {}
 	local function consider(session, folder)
 		if not session or type(folder) ~= "string" or folder == "" then return end
 		local seen = norm(folder)
-		local value = if seen == wanted then 2 elseif under(seen, wanted) or under(wanted, seen) then 1 else 0
+		local value = 0
+		if seen == wanted then
+			value = 2
+		elseif under(seen, wanted) then
+			-- The target folder is inside this workspace. A broad parent pane (a home or a Developer root
+			-- holding every project) must not claim every subfolder: only a workspace rooted at its own
+			-- name (Developer/Structor for "Structor") owns descendants.
+			if string.match(seen, "([^/]+)/*$") == (name_by_session[session] or "") then value = 1 end
+		elseif under(wanted, seen) then
+			-- The workspace is inside the target: a child project is a plausible owner of that folder.
+			value = 1
+		end
 		if value > (score[session] or 0) then score[session] = value end
 	end
 	for _, pane in cx.session:panes() do
@@ -2127,6 +2154,7 @@ local function workspace_for_path(cx, path)
 	end
 	return best
 end
+
 local function sidebar_action(ev, cx)
 	-- Runs a palette action only when Tern currently offers it; a disabled plugin action says why instead of failing.
 	local function run_action(id,label)
@@ -2178,8 +2206,14 @@ local function sidebar_action(ev, cx)
 		-- A remote tab runs its command through that host's shell, so it resolves `omp` itself.
 		-- Open it in the workspace that owns the folder, not wherever focus happens to be.
 		local owner=workspace_for_path(cx,entry.cwd)
+		local created=false
+		if not owner and type(entry.cwd)=="string" and entry.cwd~="" and tern.fs.exists(entry.cwd) then
+			local name=string.match(entry.cwd,"([^/]+)/*$")
+			local ok,session=pcall(function() return launchers.session_id(cx.sessions:create({name=name,cwd=entry.cwd})) end)
+			if ok and session then owner=session;created=true end
+		end
 		local launch={cwd=entry.cwd,command=string.format("%q --resume %s",omp_cmd(host),resume)}
-		if owner and owner~=cx.sessions:current().id then
+		if created or (owner and owner~=cx.sessions:current().id) then
 			-- A session switch applies on the next frame; a tab opened in the same callback lands in the old workspace.
 			pcall(cx.sessions.switch,cx.sessions,owner)
 			tern.timer(0,function(nextCx)
@@ -2487,8 +2521,8 @@ local function sidebar_action(ev, cx)
 			if type(path) ~= "string" or path == "" then return end
 			if string.sub(path,1,1) ~= "/" then nextCx:toast("error","Use an absolute folder path"); return end
 			if nextCx.hosts:current().id ~= host.id then nextCx:toast("info","Project not added","Switch back to " .. host.name .. " before choosing its folder."); return end
-			local created=nextCx.sessions:create({name=string.match(path,"([^/]+)/*$"),cwd=path})
-			if created then project_paths[string.format("%.0f",created.id)]=path;tern.kv.set("project_paths",project_paths) end
+			local created=launchers.session_id(nextCx.sessions:create({name=string.match(path,"([^/]+)/*$"),cwd=path}))
+			if created then project_paths[string.format("%.0f",created)]=path;tern.kv.set("project_paths",project_paths) end
 			refresh(nextCx)
 		end
 		if tern.runtime.os == "macos" and host.kind == "local" then

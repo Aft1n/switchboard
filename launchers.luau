@@ -117,6 +117,12 @@ function M.sync(cx)
 	if o and o.pane and not M.is_overlay(cx, o.pane) then overlay = nil; style(false) end
 end
 
+-- `cx.sessions:create` returns the new session id (a number) on current Tern; accept an object too.
+function M.session_id(value)
+	if type(value) == "table" then return value.id end
+	return value
+end
+
 function M.native_by_id(id)
 	for _, entry in M.native do if entry.action == id then return entry end end
 	return nil
