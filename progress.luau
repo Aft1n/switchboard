@@ -145,9 +145,19 @@ function M.sample(messages,previous,state,native_view)
  result.recent_steps=nil
  local native=M.from_view(native_view)
  if native then result.todo=native end
- if state=="idle" and type(previous)=="table" then
-  if not result.todo then result.todo=previous.todo end
-  if #result.steps==0 then result.steps=previous.steps or {} end
+ if type(previous)=="table" then
+  -- A todo list is session state, but the transcript read only carries the last 60 messages: keep the list
+  -- once the tool call that set it scrolls out of that window. A finished list is dropped when a new user
+  -- turn is in the window, and a new todo call replaces it.
+  if not result.todo and previous.todo then
+   local new_turn=false
+   if type(messages)=="table" then
+    for _, message in messages do if type(message)=="table" and message.role=="user" then new_turn=true; break end end
+   end
+   local todo=previous.todo
+   if todo.done<todo.total or not new_turn then result.todo=todo end
+  end
+  if state=="idle" and #result.steps==0 then result.steps=previous.steps or {} end
  end
  return result
 end

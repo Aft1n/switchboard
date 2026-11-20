@@ -121,6 +121,15 @@ local live=progress.sample({{role="user",text="new work"}},last,"working",nil)
 assert(live.todo.done==6 and #live.steps==0)
 assert(progress.from_view({name="Todos, 8 of 7 done"})==nil)
 print("finished cards retain steps and use native completed todo counts")
+-- The todo tool call can scroll out of the short transcript window; the list is session state.
+local carried=progress.sample({{role="assistant",tools={{name="bash",intent="Later",status="done"}}}},{todo={done=3,total=8},steps={}},"working",nil)
+assert(carried.todo and carried.todo.done==3 and carried.todo.total==8)
+local carried_done=progress.sample({{role="assistant",tools={{name="bash",intent="Later",status="done"}}}},{todo={done=8,total=8},steps={}},"working",nil)
+assert(carried_done.todo and carried_done.todo.done==8,"A finished list stays while no new turn shows")
+local next_turn=progress.sample({{role="user",text="Next task"},{role="assistant",tools={{name="bash",intent="Later",status="done"}}}},{todo={done=8,total=8},steps={}},"working",nil)
+assert(next_turn.todo==nil,"A finished list drops once a new turn is in the window")
+print("todo lists survive the transcript window")
+
 
 assert(progress.next_read({[9]={state="idle",dirty=false,read_at=0,subagents={{id="Worker",state="working"}}}},3000,nil)==9,"Live children must refresh while their parent is idle")
 return true

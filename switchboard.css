@@ -44,6 +44,11 @@ html.lay-tiles .tn-pane:has(.switchboard) { --cp-corner:var(--tn-tile-r); }
 .switchboard .cp-agent-row { position:relative; flex:0 0 auto; min-width:0; }
 .switchboard [data-role='switchboard.agent-close'] { position:absolute; top:4px; right:4px; z-index:2; width:22px; min-width:22px; height:22px; padding:3px; opacity:0; pointer-events:none; transition:opacity 120ms ease; }
 .cp-agent-row:hover [data-role='switchboard.agent-close'], .cp-agent-row:focus-within [data-role='switchboard.agent-close'] { opacity:1; pointer-events:auto; }
+.switchboard .cp-bell { position:relative; width:24px; height:24px; padding:0; border-radius:6px; display:flex; align-items:center; justify-content:center; background:transparent; color:var(--t3); }
+.switchboard .cp-bell:hover { color:var(--t1); background:color-mix(in srgb,var(--ink) 8%,transparent); }
+.switchboard .cp-bell-unread { color:var(--t1); }
+.switchboard .cp-bell-badge { position:absolute; top:-3px; right:-4px; min-width:13px; height:13px; padding:0 3px; border-radius:7px; background:var(--accent); color:var(--panel,var(--card,Canvas)); font-size:9px; font-weight:700; line-height:13px; text-align:center; }
+.switchboard .cp-update .cp-update-icon { color:var(--accent); }
 .cp-branch { color: var(--t4); }
 .cp-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cp-selected { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--t1); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent); }
@@ -100,9 +105,26 @@ html.lay-tiles .tn-pane:has(.switchboard) { --cp-corner:var(--tn-tile-r); }
 .cp-step-failed .cp-step-icon { color: var(--bad); }
 .cp-agent:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .cp-footer { flex-shrink: 0; border-top: 1px solid color-mix(in srgb, var(--ink) 8%, transparent); padding-top: 4px; }
-.cp-launchers { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 4px; }
-.cp-launchers .sf-button { width: 28px; height: 28px; padding: 0; border-radius: 6px; color: var(--t3); }
-.cp-launchers .sf-button:hover { color: var(--t1); background: color-mix(in srgb, var(--ink) 8%, transparent); }
+.cp-launchers { position: relative; display: flex; align-items: center; gap: 6px; padding: 0 4px; min-width: 0; }
+.switchboard .cp-launchers-scroll { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; padding: 1px 0; }
+.switchboard .cp-launchers .sf-button { width: 28px; height: 28px; padding: 0; border-radius: 6px; color: var(--t3); flex: 0 0 auto; }
+.switchboard .cp-launchers .sf-button:hover { color: var(--t1); background: color-mix(in srgb, var(--ink) 8%, transparent); }
+.switchboard .cp-launcher-divider { flex: 0 0 1px; width: 1px; height: 16px; margin: 0 1px; background: color-mix(in srgb, var(--ink) 16%, transparent); }
+.switchboard .cp-launcher-grid-trigger { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--t3); }
+.switchboard .cp-launcher-grid-trigger:hover { color: var(--t1); background: color-mix(in srgb, var(--ink) 8%, transparent); }
+.switchboard .cp-launcher-card { display: none; position: absolute; left: 4px; right: 4px; bottom: 100%; max-height: 44vh; overflow-y: auto; padding: 8px; border-radius: var(--r-panel, 9px); background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(24px); border: 1px solid var(--l2); box-shadow: 0 8px 28px #0002; z-index: 2000; }
+.switchboard .cp-launchers:has(.cp-launcher-grid-trigger:hover) .cp-launcher-card,
+.switchboard .cp-launchers:has(.cp-launcher-grid-trigger:focus) .cp-launcher-card,
+.switchboard .cp-launchers:has(.cp-launcher-card:hover) .cp-launcher-card { display: block; }
+.switchboard .cp-launcher-groups { display: flex; align-items: flex-start; gap: 8px; }
+.switchboard .cp-launcher-group { display: flex; flex-direction: column; gap: 5px; flex: 1 1 0; min-width: 0; }
+.switchboard .cp-launcher-group-title { padding: 0 2px; overflow: hidden; color: var(--t4); font-size: 9px; font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase; white-space: nowrap; text-overflow: ellipsis; }
+.switchboard .cp-launcher-group-items { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.switchboard .cp-launcher-tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: 48px; padding: 5px 2px; border: 0; border-radius: 8px; background: color-mix(in srgb, var(--ink) 4%, transparent); color: var(--t2); text-align: center; font-size: 10px; }
+.switchboard .cp-launcher-tile:hover { background: color-mix(in srgb, var(--ink) 10%, transparent); color: var(--t1); }
+.switchboard .cp-launcher-tile-icon { display: flex; width: 18px; height: 18px; align-items: center; justify-content: center; color: var(--t3); }
+.switchboard .cp-launcher-tile-icon .sf-icon { width: 16px; height: 16px; }
+.switchboard .cp-launcher-tile-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-empty { padding: 10px 8px; color: var(--t3); font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
 .switchboard button:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
 .switchboard button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
@@ -234,6 +256,33 @@ html.lay-tiles .tn-pane:has(.switchboard) { --cp-corner:var(--tn-tile-r); }
 .cp-project-row:hover .cp-project .cp-project-icon, .cp-project-row:focus-within .cp-project .cp-project-icon, .cp-project-row.cp-picked .cp-project .cp-project-icon { opacity:0; }
 .cp-project-row:hover .cp-workspace-grip, .cp-project-row:focus-within .cp-workspace-grip, .cp-project-row.cp-picked .cp-workspace-grip { opacity:.55; pointer-events:auto; }
 .switchboard .cp-workspace-grip:hover { opacity:1; background:color-mix(in srgb, var(--ink) 8%, transparent); color:var(--t1); }
+.switchboard .cp-projects-section { position: relative; }
+.switchboard .cp-restore-tree { display: flex; align-items: center; gap: 8px; margin: 2px 4px 6px; padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--t2); text-align: left; }
+.switchboard .cp-restore-tree:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--t1); }
+.switchboard .cp-restore-icon { display: flex; flex: 0 0 16px; width: 16px; height: 16px; align-items: center; justify-content: center; color: var(--accent); }
+.switchboard .cp-restore-icon .sf-icon { width: 14px; height: 14px; }
+.switchboard .cp-restore-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.switchboard .cp-restore-label { color: var(--t1); font-size: 11px; font-weight: 600; }
+.switchboard .cp-restore-sub { overflow: hidden; color: var(--t4); font-size: 10px; white-space: nowrap; text-overflow: ellipsis; }
+.switchboard .cp-workspace-park { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 3px; height: 22px; min-width: 22px; padding: 0 4px; border: 0; border-radius: 6px; background: transparent; color: var(--t3); z-index: 1; }
+.switchboard .cp-project-row.cp-has-park > .cp-project { padding-right: 34px; }
+.switchboard .cp-project-row.cp-has-park [data-role='switchboard.workspace-close'] { right: 34px; }
+.switchboard .cp-project-row.cp-has-park .cp-workspace-chevron { display: none; }
+.switchboard .cp-workspace-park:hover, .switchboard .cp-project-row.cp-current .cp-workspace-park { color: var(--t2); background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.switchboard .cp-workspace-park-icon { display: flex; width: 13px; height: 13px; align-items: center; justify-content: center; }
+.switchboard .cp-workspace-park-icon .sf-icon { width: 12px; height: 12px; }
+.switchboard .cp-park-count { font-size: 9px; font-weight: 600; color: var(--t3); }
+.switchboard .cp-park-card { display: none; position: absolute; left: 8px; right: 8px; top: 26px; max-height: calc(100% - 34px); overflow-y: auto; flex-direction: column; gap: 4px; padding: 7px; border-radius: var(--r-panel, 9px); background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(24px); border: 1px solid var(--l2); box-shadow: 0 8px 28px #0002; z-index: 2000; }
+.switchboard .cp-park-open { display: flex; }
+.switchboard .cp-park-title { display: flex; justify-content: space-between; padding: 1px 5px 4px; color: var(--t4); font-size: 9px; font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase; }
+.switchboard .cp-park-title-count { color: var(--t3); }
+.switchboard .cp-park-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 6px; border: 0; border-radius: 7px; background: color-mix(in srgb, var(--ink) 3%, transparent); color: var(--t2); text-align: left; flex-shrink: 0; }
+.switchboard .cp-park-row:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); color: var(--t1); }
+.switchboard .cp-park-icon { display: flex; flex: 0 0 20px; width: 20px; height: 20px; align-items: center; justify-content: center; border-radius: 5px; background: color-mix(in srgb, var(--ink) 6%, transparent); color: var(--t3); }
+.switchboard .cp-park-icon .sf-icon { width: 14px; height: 14px; }
+.switchboard .cp-park-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.switchboard .cp-park-name { overflow: hidden; color: var(--t1); font-size: 11.5px; font-weight: 550; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.switchboard .cp-park-meta { overflow: hidden; color: var(--t4); font-size: 10px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
 .switchboard .cp-workspace-grip[data-active='true'], .cp-project-row.cp-picked .cp-workspace-grip { opacity:1; background:color-mix(in srgb, var(--accent) 18%, transparent); color:var(--accent); cursor:grabbing; }
 .cp-projects.cp-lift .cp-project-row { cursor:copy; }
 /* Dropping is "above the project you click": a thick line in the gap above the

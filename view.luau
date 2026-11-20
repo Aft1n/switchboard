@@ -12,6 +12,17 @@ local TOOL_ICONS = {
 	todo="list-checks", task="users", wait="timer", lsp="code", eval="code", github="branch",
 }
 
+-- Parked panes show their kind's icon and Tern's own name for that kind.
+local PARK_KIND_LABELS = {
+	procs="Task manager", board="Board", git="Git", browser="Browser", screen="Screen",
+	notebook="Notebook", database="Database", profile="Profile", plugin="Plugin", file="File",
+	terminal="Terminal", agent="Agent", carly="Carly", canvas="Canvas",
+}
+local PARK_ICONS = {
+	procs="list-checks", board="list-checks", git="branch", browser="globe", screen="globe",
+	notebook="file", database="database", profile="sparkle", plugin="plug", file="file",
+	terminal="terminal", agent="terminal", carly="sparkle", canvas="sparkle",
+}
 local LABELS = {working="Running", waiting_input="Needs input", idle="Idle", done="New result"}
 local PROVIDER_NAMES = {["openai-codex"]="Codex", anthropic="Claude", ["google-antigravity"]="Gemini", commandcode="Command"}
 local PROVIDER_LOGOS = {anthropic="provider-anthropic", ["openai-codex"]="provider-openai", ["google-antigravity"]="provider-google"}
@@ -131,6 +142,8 @@ function M.render(ui, data, focused, cache)
 		})
 	end
 	local projects = {}
+	local parked = data.parked or {}
+	local park_cards, park_sheets = {}, {}
 	local lift_id = data.workspace_lift
 	local lift_name
 	for _, item in data.projects do
@@ -152,9 +165,10 @@ function M.render(ui, data, focused, cache)
 		local row_action = (if #p.tabs == 0 then "select-workspace:" else "fold-workspace:") .. workspace_key
 		local color_class = project_colors.class((data.project_colors or {})[p.name or ""])
 		local drop = if lift_id and not picked then " cp-drop-target" else ""
+		local park = parked[p.id] or parked[tostring(p.id)] or {}
 		local signature = join(
 			"workspace", p.id, p.name, p.current, p.busy_tabs, #p.tabs, expanded, picked,
-			lift_id, lift_name, color_class, row_action, drop
+			lift_id, lift_name, color_class, row_action, drop, #park
 		)
 		local project_row = cached(cache, "ws:" .. workspace_key, signature, function()
 			local project = el("button", "cp-project" .. (if (p.busy_tabs or 0)>0 then " cp-workspace-busy" else "") .. (if p.current then " cp-current" else "") .. (if expanded then " cp-open" else ""), {
@@ -171,15 +185,47 @@ function M.render(ui, data, focused, cache)
 			grip.p.aria = if picked then "Cancel moving " .. p.name else "Move " .. p.name
 			-- Classes, not attrs: Tern's view drops arbitrary attributes, so CSS never saw them.
 			local row_children = {project, grip}
+			if #park > 0 then
+				-- Hover or click shows the workspace's parked panes; the card is outside the scroller.
+				local badge = el("button", "cp-workspace-park cp-park-" .. workspace_key, {
+					icon("box","cp-workspace-park-icon"), text("cp-park-count", tostring(#park)),
+				}, nil, "park-open:" .. workspace_key)
+				badge.p.title = tostring(#park) .. (if #park == 1 then " parked pane in " else " parked panes in ") .. p.name
+				badge.p.aria = badge.p.title
+				table.insert(row_children, badge)
+			end
 			if drop ~= "" then table.insert(row_children, text("cp-drop-hint", "Drop here")) end
 			table.insert(row_children, ui.button("", {
 				icon="x", title="Close workspace", aria="Close workspace " .. p.name,
 				role="switchboard.workspace-close", variant="quiet", size="sm",
 				actions={click="close-workspace:" .. workspace_key},
 			}))
-			return ui.el("div", {class="cp-project-row" .. (if picked then " cp-picked" else "") .. drop, key="project-row" .. workspace_key}, row_children)
+			return ui.el("div", {class="cp-project-row" .. (if #park > 0 then " cp-has-park" else "") .. (if picked then " cp-picked" else "") .. drop, key="project-row" .. workspace_key}, row_children)
 		end)
 		table.insert(projects, project_row)
+		if #park > 0 then
+			local card_rows = {el("div","cp-park-title",{text("cp-park-title-label","Parked panes"),text("cp-park-title-count",tostring(#park))})}
+			for _, entry in park do
+				-- Rich row like an agent card: kind icon, title, then the kind and folder Tern shows for the block.
+				local folder = string.match(entry.cwd or "", "([^/]+)/*$")
+				local meta = PARK_KIND_LABELS[entry.kind] or (entry.kind or "Block")
+				if folder then meta = meta .. " · " .. folder end
+				local row = el("button", "cp-park-row", {
+					icon(PARK_ICONS[entry.kind] or "box","cp-park-icon"),
+					el("div","cp-park-copy",{
+						text("cp-park-name", entry.title),
+						text("cp-park-meta", meta),
+					}),
+				}, nil, "unpark:" .. string.format("%.0f",entry.pane) .. ":" .. workspace_key)
+				row.p.title = entry.title .. " · " .. meta .. (if entry.cwd then "\n" .. entry.cwd else "")
+				table.insert(card_rows, row)
+			end
+			table.insert(park_cards, ui.el("div", {class="cp-park-card cp-park-card-" .. workspace_key .. (if data.park_open == workspace_key then " cp-park-open" else ""), key="park-card-" .. workspace_key}, card_rows))
+			-- The trigger sits inside the scroller; the card is its sibling. `:has` on the section keeps them in step.
+			table.insert(park_sheets, string.format(
+				".cp-projects-section:has(.cp-park-%s:hover) .cp-park-card-%s, .cp-projects-section:has(.cp-park-%s:focus) .cp-park-card-%s, .cp-projects-section:has(.cp-park-card-%s:hover) .cp-park-card-%s { display:flex; }",
+				workspace_key, workspace_key, workspace_key, workspace_key, workspace_key, workspace_key))
+		end
 		if expanded then
 			for _, t in p.tabs do
 				local tab_key = string.format("%.0f",t.id)
@@ -471,16 +517,40 @@ function M.render(ui, data, focused, cache)
 	-- Every tern.ui call costs milliseconds in Tern, and the shell is ~40 of them: when no card rebuilt and
 	-- no shell input moved, the last tree is still exact, so the 2 s heartbeat repaint builds nothing.
 	local shortcut_sig = {}
-	for _, shortcut in data.shortcuts or {} do shortcut_sig[#shortcut_sig + 1] = join(shortcut.icon, shortcut.label) end
+	for _, shortcut in data.shortcuts or {} do shortcut_sig[#shortcut_sig + 1] = join(shortcut.icon, shortcut.label, shortcut.action, shortcut.block) end
+	local park_sig = {}
+	for id, list in data.parked or {} do
+		park_sig[#park_sig + 1] = tostring(id)
+		for _, entry in list do park_sig[#park_sig + 1] = join(entry.pane, entry.title, entry.kind) end
+	end
 	local h, sizes = data.host, section_sizes.read(data.section_sizes)
 	local root_sig = join(
 		data.sidebar_pane, data.sidebar_host, data.workspace_lift, data.quota_state,
+		data.inbox_count, data.update_ready, data.park_open, data.restore_tree, data.restore_tabs,
 		show_closed, show_steps, show_hosts, show_quotas, #shown, #data.agents, #closed,
 		h and join(h.id, h.kind, h.state, h.name) or "-", sizes[1], sizes[2],
-		table.concat(shortcut_sig, SEP), table.concat(slot_order, SEP)
+		table.concat(shortcut_sig, SEP), table.concat(park_sig, SEP), table.concat(slot_order, SEP)
 	)
 	local memo = cache and root_memos[cache]
 	if memo and memo.sig == root_sig and #cache.changed() == 0 then return memo.tree, memo.sheet end
+
+	local projects_section = {
+		el("div", "cp-heading", {text("", "Workspaces"), text("cp-count", tostring(#shown))}),
+		ui.el("div", {class="cp-projects" .. (if data.workspace_lift then " cp-lift" else "")}, projects),
+	}
+	if (data.restore_tree or 0) > 0 then
+		-- A daemon reset left saved projects out of the live tree: rebuild them without spawning agents.
+		local restore = el("button", "cp-restore-tree", {
+			icon("undo","cp-restore-icon"),
+			el("div","cp-restore-copy",{
+				text("cp-restore-label","Restore saved tree"),
+				text("cp-restore-sub", tostring(data.restore_tree) .. " projects" .. (if (data.restore_tabs or 0) > 0 then " · " .. tostring(data.restore_tabs) .. " agent tabs kept" else "")),
+			}),
+		}, nil, "restore-tree")
+		restore.p.title = "Recreate the saved projects; their agent tabs stay resumable in Closed"
+		table.insert(projects_section,1,restore)
+	end
+	for _, card in park_cards do table.insert(projects_section, card) end
 	local tools = {text("cp-count",tostring(#data.agents))}
 	if #closed > 0 then
 		-- Tern ships no broom icon; cp-broom-icon draws one in CSS.
@@ -489,20 +559,59 @@ function M.render(ui, data, focused, cache)
 		broom.p.attrs = {["aria-label"]="Clear closed agents"}
 		table.insert(tools, broom)
 	end
-	table.insert(tools, ui.button("",{icon="bell",title="Tern needs you",aria="Tern needs you",variant="quiet",size="sm",actions={click="inbox"}}))
+	-- Tern's inbox is the panes with an unseen alert; the count is native, not a heuristic.
+	local inbox_count = data.inbox_count or 0
+	local bell_children = {icon("bell","cp-bell-icon")}
+	if inbox_count > 0 then table.insert(bell_children, text("cp-bell-badge", tostring(inbox_count))) end
+	local bell = el("button", "cp-bell" .. (if inbox_count > 0 then " cp-bell-unread" else ""), bell_children, nil, "inbox")
+	bell.p.title = if inbox_count > 0 then tostring(inbox_count) .. " waiting in Tern's inbox" else "Tern needs you"
+	bell.p.attrs = {["aria-label"]=bell.p.title}
+	table.insert(tools, bell)
 	local agents_section = {
 		el("div", "cp-heading", {text("", "Agents"), el("div","cp-agent-header-tools",tools)}),
 		summary,
 		el("div", "cp-agents", agents),
 	}
-	local launchers = {}
+	-- Custom plugin shortcuts scroll in the row; built-in Tern blocks sit behind a separate grid trigger,
+	-- and the add button is its own slot. Each built-in opens a tile in the hover card.
+	local launcher_buttons = {}
 	for i, shortcut in data.shortcuts or {} do
-		table.insert(launchers, ui.button("", {
+		table.insert(launcher_buttons, ui.button("", {
 			icon=if shortcut.icon and shortcut.icon ~= "" then shortcut.icon else "plug", title=shortcut.label, aria=shortcut.label,
 			variant="quiet",size="sm",actions={click="launch:" .. i},
 		}))
 	end
-	table.insert(launchers, ui.button("", {icon="plus",title="Add or remove plugin shortcuts",aria="Add or remove plugin shortcuts",variant="quiet",size="sm",actions={click="edit-shortcuts"}}))
+	-- The card is a few vertical categories side by side, each a stack of square icon tiles, so the menu
+	-- reads as a grid rather than one long list.
+	local group_names, group_tiles = {}, {}
+	for _, entry in data.native_blocks or {} do
+		local name = entry.group or "Blocks"
+		if not group_tiles[name] then group_tiles[name] = {}; group_names[#group_names+1] = name end
+		local tile = el("button", "cp-launcher-tile",
+			{icon(entry.icon,"cp-launcher-tile-icon"), text("cp-launcher-tile-label", entry.label)}, nil, "launch-native:" .. entry.action)
+		tile.p.title = entry.label
+		tile.p.attrs = {["aria-label"]=entry.label}
+		table.insert(group_tiles[name], tile)
+	end
+	local group_nodes = {}
+	for _, name in group_names do
+		table.insert(group_nodes, el("div", "cp-launcher-group", {
+			text("cp-launcher-group-title", name),
+			ui.el("div", {class="cp-launcher-group-items", key="launcher-" .. name}, group_tiles[name]),
+		}))
+	end
+	local grid_trigger = el("button", "cp-launcher-grid-trigger", {icon("grip","cp-launcher-grid-icon")}, nil, "keep-focus")
+	grid_trigger.p.title = "Built-in Tern blocks"
+	grid_trigger.p.attrs = {["aria-label"]="Built-in Tern blocks"}
+	local launchers = el("div", "cp-launchers", {
+		ui.el("div", {class="cp-launchers-scroll", key="launchers"}, launcher_buttons),
+		el("span", "cp-launcher-divider"),
+		grid_trigger,
+		el("span", "cp-launcher-divider"),
+		ui.button("", {icon="plus",title="Add or remove shortcuts",aria="Add or remove shortcuts",variant="quiet",size="sm",actions={click="edit-shortcuts"}}),
+		ui.el("div", {class="cp-launcher-card", key="launcher-card"},
+			{ui.el("div", {class="cp-launcher-groups", key="launcher-groups"}, group_nodes)}),
+	})
 	local host_nodes = {}
 	if data.host then
 		local h = data.host
@@ -514,25 +623,32 @@ function M.render(ui, data, focused, cache)
 		table.insert(host_nodes,host)
 	end
 	if show_quotas and data.quota_state then table.insert(quota_nodes,text("cp-quota-state",data.quota_state)) end
+	-- A downloaded Tern build waiting for a restart: an icon, not the native full-width button.
+	local brand_tools = {}
+	if data.update_ready then
+		local update = el("button", "cp-tool cp-update", {icon("download","cp-update-icon")}, nil, "update")
+		update.p.title = "Tern update ready · click to restart and update"
+		update.p.attrs = {["aria-label"]="Tern update ready"}
+		table.insert(brand_tools, update)
+	end
+	table.insert(brand_tools, el("button", "cp-tool", nil, "+", "new-workspace"))
+	local brand_children = {el("span","cp-switchboard-mark"), text("cp-brand-name", "Switchboard"),
+		el("div","cp-hosts",host_nodes)}
+	for _, node in brand_tools do table.insert(brand_children, node) end
 	local tree = el("div", "switchboard", {
-		el("div", "cp-brand", {el("span","cp-switchboard-mark"), text("cp-brand-name", "Switchboard"),
-			el("div","cp-hosts",host_nodes),
-			el("button", "cp-tool", nil, "+", "new-workspace")}),
+		el("div", "cp-brand", brand_children),
 		el("div", "cp-sections", {
 			ui.node("split", {
 				key="sections", role="switchboard.sections", grow=1, dir="col",
 				sizes=section_sizes.read(data.section_sizes),
 				min={"6lines","8lines"},
 			}, {
-				el("div", "cp-projects-section", {
-					el("div", "cp-heading", {text("", "Workspaces"), text("cp-count", tostring(#shown))}),
-					ui.el("div", {class="cp-projects" .. (if data.workspace_lift then " cp-lift" else "")}, projects),
-				}),
+				el("div", "cp-projects-section", projects_section),
 				el("div", "cp-agents-section", agents_section),
 			}),
 		}),
 		el("div", "cp-footer", {
-			el("div", "cp-launchers", launchers),
+			launchers,
 			el("div","cp-footer-bottom", {
 				ui.button("",{icon="undo",title="Switch to the original Tern sidebar",aria="Switch to the original Tern sidebar",variant="quiet",size="sm",actions={click="restore"}}),
 				el("div", "cp-quotas", quota_nodes),
@@ -541,7 +657,7 @@ function M.render(ui, data, focused, cache)
 		}),
 		el("div","cp-quota-popovers",quota_popovers),
 	},nil,"keep-focus")
-	local sheet = table.concat(quota_sheets,"\n")
+	local sheet = table.concat(quota_sheets,"\n") .. "\n" .. table.concat(park_sheets,"\n")
 	if cache then root_memos[cache] = {sig=root_sig, tree=tree, sheet=sheet} end
 	return tree, sheet
 end

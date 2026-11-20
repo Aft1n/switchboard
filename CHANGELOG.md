@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.8
+
+- Switchboard keeps a durable tree history in kv: every project, each tab's split layout, and every pane's omp session id. When a daemon reset or update drops projects, a "Restore saved tree" banner and the palette command `Switchboard: restore saved tree` recreate the projects, rebuild tabs that contain agents with their splits and resume those agents (bounded to 15 tabs and 12 agents, the rest stay resumable Closed cards); shell-only layouts are skipped.
+- Each workspace shows a parked-pane badge when Tern has parked panes whose folder belongs there. Hovering (or clicking) the badge opens a card of rich rows in Tern's own terms: kind icon, block title and kind · folder; choosing one switches to that workspace and unparks the pane.
+- The footer launcher row keeps your custom plugin shortcuts, scrolls sideways like the quota row, and separates two fixed slots: a grid button that opens a hover card, and the add button. The card lays built-in Tern blocks (task manager, board, git, browser, screen, agent, shell, notebook, note, database, canvas, Carly) out as three vertical category columns of square icon tiles instead of one long list. Built-in blocks open as centered overlay windows with a dimmed backdrop: Git uses Tern's own glimpse, and the rest (task manager, board, screen, shell, agent, browser, notebook, …) are opened, floated, and restyled into a centered card by a plugin style sheet. The float header stays on top: "Expand picture in picture" (⇧⌘↵) fills the block area, "Return to split" makes the card a tiled block, and "Close block" ends it; the style is dropped as soon as it leaves the float.
+- Agent todo bars no longer vanish when the todo tool call scrolls out of the short transcript window: a missing list gets a deeper read now and then and is carried forward until a new turn starts.
+- The Agents header bell shows Tern's native inbox count (the panes with an unseen alert) as a badge; a click still opens the inbox.
+- When Tern has a downloaded build waiting for a restart, an update icon appears in the header; a click runs Tern's own Restart to Update. The icon follows Tern's `ready` field in its update state, not leftover download folders.
+
 ## 0.1.7
 
 - Renders no longer trip Tern's 50 ms budget: `tern.ui.el` copies its whole child subtree on every call, so the nested containers over all cards cost 30-185 ms of Lua per render. Containers now take their children by reference. This was why a resumed or new session sometimes appeared only after switching tabs.

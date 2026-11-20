@@ -549,7 +549,119 @@ shell_changes("quota state",function() memo_data.quota_state="Refreshing" end)
 shell_changes("section sizes",function() memo_data.section_sizes={0.3,0.7} end)
 shell_changes("closed list hidden",function() memo_data.sidebar_settings={closed=false} end)
 shell_changes("agent gone",function() memo_data.agents={} end)
+shell_changes("inbox count",function() memo_data.inbox_count=1 end)
+shell_changes("update ready",function() memo_data.update_ready=true end)
 print("an unchanged repaint builds no nodes; changed shell inputs still rebuild")
+-- The bell carries Tern's inbox count; a downloaded update shows as a header icon.
+local bell=class_nodes(memo_prev,"cp-bell")[1]
+assert(bell,"missing inbox bell")
+eq(#class_nodes(bell,"cp-bell-badge"),1)
+eq(class_nodes(bell,"cp-bell-badge")[1].props.text,"1")
+local update_nodes={}
+collect(memo_prev,function(node) return node.props~=nil and node.props.actions~=nil and node.props.actions.click=="update" end,update_nodes)
+eq(#update_nodes,1)
+eq(#class_nodes(memo_prev,"cp-update"),1)
+local no_update=table.clone(memo_data)
+no_update.update_ready=false
+local plain_tree=view.render(stub,no_update,901,nil)
+eq(#class_nodes(plain_tree,"cp-update"),0)
+eq(#class_nodes(plain_tree,"cp-bell-badge"),1)
+print("bell badge and update icon follow the data")
+-- Custom plugin shortcuts scroll in the row; built-ins live in a separate grid card, and add has its own slot.
+local launch_data=table.clone(memo_data)
+launch_data.native_blocks={
+	{action="new_task_manager_block",group="Work",label="Task manager",icon="list-checks"},
+	{action="new_browser_block",group="Surfaces",label="Browser",icon="globe"},
+	{action="new_notebook",group="Data",label="Notebook",icon="file"},
+}
+launch_data.shortcuts={
+	{label="Task board",icon="check",block="taskboard.board"},
+	{label="Git pinned",icon="branch",action="new_git_block"},
+}
+local launch_tree=view.render(stub,launch_data,901,nil)
+local scroll=class_nodes(launch_tree,"cp-launchers-scroll")[1]
+assert(scroll,"missing launcher scroller")
+local launched={}
+collect(scroll,function(node)
+	return node.props~=nil and node.props.actions~=nil and type(node.props.actions.click)=="string"
+		and string.find(node.props.actions.click,"^launch:")~=nil
+end,launched)
+eq(#launched,2)
+local card=class_nodes(launch_tree,"cp-launcher-card")[1]
+assert(card,"missing launcher card")
+local tiles={}
+collect(card,function(node)
+	return node.props~=nil and node.props.actions~=nil and type(node.props.actions.click)=="string"
+		and string.find(node.props.actions.click,"^launch%-native:")~=nil
+end,tiles)
+eq(#tiles,3)
+eq(#class_nodes(card,"cp-launcher-tile"),3)
+eq(#class_nodes(card,"cp-launcher-group"),3)
+local group_titles={}
+collect(card,function(node) return node.props~=nil and node.props.class=="cp-launcher-group-title" end,group_titles)
+eq(#group_titles,3)
+eq(group_titles[1].props.text,"Work")
+eq(group_titles[2].props.text,"Surfaces")
+eq(group_titles[3].props.text,"Data")
+eq(#class_nodes(launch_tree,"cp-launcher-grid-trigger"),1)
+eq(#class_nodes(launch_tree,"cp-launcher-divider"),2)
+local grid_inside=0
+collect(scroll,function(node) if node.props~=nil and node.props.class~=nil and string.find(node.props.class,"cp-launcher-grid-trigger",1,true) then grid_inside+=1 end end,{})
+eq(grid_inside,0)
+local add_nodes={}
+collect(launch_tree,function(node) return node.props~=nil and node.props.actions~=nil and node.props.actions.click=="edit-shortcuts" end,add_nodes)
+eq(#add_nodes,1)
+local add_inside=0
+collect(scroll,function(node) if node.props~=nil and node.props.actions~=nil and node.props.actions.click=="edit-shortcuts" then add_inside+=1 end end,{})
+eq(add_inside,0)
+print("custom shortcuts scroll; built-ins are a separate grid card; add is its own slot")
+-- Parked panes: a workspace with parked blocks gets a count badge and a hover card of unpark rows.
+local park_data=table.clone(slot_data)
+park_data.parked={
+	["1"]={
+		{pane=71,title="Processes",kind="procs",cwd="/api"},
+		{pane=72,title="Git",kind="git",cwd="/api"},
+	},
+}
+local park_tree,park_sheet=view.render(stub,park_data,901,nil)
+local park_badges=class_nodes(park_tree,"cp-workspace-park")
+eq(#park_badges,1)
+eq(class_nodes(park_badges[1],"cp-park-count")[1].props.text,"2")
+eq(park_badges[1].props.title,"2 parked panes in api")
+eq(park_badges[1].props.actions.click,"park-open:1")
+local park_cards=class_nodes(park_tree,"cp-park-card")
+eq(#park_cards,1)
+eq(#class_nodes(park_cards[1],"cp-park-title-count"),1)
+local park_rows={}
+collect(park_cards[1],function(node) return node.props~=nil and node.props.actions~=nil and type(node.props.actions.click)=="string" and string.find(node.props.actions.click,"^unpark:")~=nil end,park_rows)
+eq(#park_rows,2)
+eq(park_rows[1].props.actions.click,"unpark:71:1")
+-- Rich row: title and a kind/folder line, like an agent card.
+eq(class_nodes(park_rows[1],"cp-park-name")[1].props.text,"Processes")
+eq(class_nodes(park_rows[1],"cp-park-meta")[1].props.text,"Task manager · api")
+assert(string.find(park_sheet,".cp-park-card-1",1,true),"park card style is generated per workspace")
+assert(string.find(park_sheet,".cp-park-1:hover",1,true),"the badge opens its card on hover")
+park_data.park_open="1"
+local pinned=view.render(stub,park_data,901,nil)
+local pinned_card=class_nodes(pinned,"cp-park-card")[1]
+assert(has_class(pinned_card,"cp-park-open"),"a click pins the card open")
+local no_park=view.render(stub,memo_data,901,nil)
+eq(#class_nodes(no_park,"cp-workspace-park"),0)
+print("parked panes show per workspace")
+-- A tree restored from history: the workspaces section offers the saved projects.
+local restore_data=table.clone(slot_data)
+restore_data.restore_tree=3
+restore_data.restore_tabs=5
+local restore_tree=view.render(stub,restore_data,901,nil)
+local restore=class_nodes(restore_tree,"cp-restore-tree")[1]
+assert(restore,"missing saved-tree restore button")
+eq(restore.props.actions.click,"restore-tree")
+eq(class_nodes(restore,"cp-restore-label")[1].props.text,"Restore saved tree")
+eq(class_nodes(restore,"cp-restore-sub")[1].props.text,"3 projects · 5 agent tabs kept")
+eq(#class_nodes(slot_tree,"cp-restore-tree"),0)
+print("saved tree restore button follows the history")
+
+
 -- Agent cards close their tab with a sibling x, never a button nested in the card button.
 local close_nodes={}
 collect(slot_tree,function(node) return node.props~=nil and node.props.actions~=nil and node.props.actions.click=="close-agent:901" end,close_nodes)

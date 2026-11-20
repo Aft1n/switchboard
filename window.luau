@@ -73,7 +73,38 @@ local agent_history_mod=require("./agent_history")
 local agent_history=tern.kv.get("agent_history") or {}
 local agent_sessions=require("./agent_sessions")
 local executables=require("./executable")
+local launchers=require("./launchers")
+launchers.history = require("./tree_history")
+local tree_history=require("./tree_history")
 local tern_bin=executables.tern_bin()
+-- Tern's update cache: `state.json` names the installed build; a newer build folder there is downloaded and
+-- waiting for a restart (the native "Update ready" chip reads the same place).
+local update_ready, update_at = false, -math.huge
+local function update_cache_dir()
+	local home=tern.getenv("HOME") or ""
+	if tern.runtime.os=="macos" then return home .. "/Library/Caches/Tern/updates" end
+	if tern.runtime.os=="windows" then
+		local appdata=tern.getenv("LOCALAPPDATA")
+		if appdata and appdata~="" then return appdata .. "/Tern/updates" end
+	end
+	local xdg=tern.getenv("XDG_CACHE_HOME")
+	return if xdg and xdg~="" then xdg .. "/tern/updates" else home .. "/.cache/tern/updates"
+end
+local function read_update()
+	if tern.now()-update_at<60000 then return update_ready end
+	update_at=tern.now()
+	update_ready=false
+	local ok,state=pcall(function() return tern.fs.read(update_cache_dir() .. "/state.json",65536) end)
+	if not ok then return false end
+	local decoded_ok,decoded=pcall(tern.json.decode,state)
+	if not decoded_ok or type(decoded)~="table" then return false end
+	-- `ready` is the build Tern downloaded and can install on restart; Tern writes it when the download finishes
+	-- (leftover download folders without it are not updates).
+	local ready=type(decoded.ready)=="table" and decoded.ready.id
+	local installed=type(decoded.installed)=="table" and type(decoded.installed.release)=="table" and decoded.installed.release.id
+	update_ready = type(ready)=="string" and ready~="" and ready~=installed
+	return update_ready
+end
 local ovnfs_cached
 local function ovnfs_bin()
 	if ovnfs_cached then return ovnfs_cached end
@@ -249,8 +280,12 @@ local function sample(cx, infos, read)
 		-- The loading label disappears on the first read even when the snapshot stays empty.
 		local first_read = record.read_at == -math.huge
 		local was_unavailable, was_empty = record.unavailable, record.empty_transcript
+		-- The transcript window is short; a missing todo gets one deeper look now and then, so a list whose
+		-- tool call scrolled out of the window still shows (progress.sample then carries it forward).
+		local deep = not record.snapshot.todo and (record.read_at == -math.huge or now-(record.deep_read_at or -math.huge)>=30000)
+		if deep then record.deep_read_at = now end
 		local ok, messages = pcall(function()
-			return cx.agents:transcript(pick, {last=60})
+			return cx.agents:transcript(pick, {last=if deep then 400 else 60})
 		end)
 		if ok then
 			local session = pane_sessions[tostring(pick)]
@@ -910,7 +945,6 @@ end
 -- Infos from the last full refresh: a click that only changes presentation re-renders from them.
 local last_infos
 
-local pushed_at = {}
 
 -- A card's project is the folder its agent actually runs in, not the workspace's name: one
 -- Tern session can hold tabs from several folders (a hub3-nx tab inside a remintor session
@@ -969,7 +1003,11 @@ local function render(cx, infos, reveal_target, visible_only)
 	local layouts = {}
 	for _, tab in tabs do layouts[tab.id] = cx.session:layout(tab.id) end
 	local actual_focus = reveal_target or cx.session:focused()
-	if actual_focus and not owned[actual_focus] then
+	if actual_focus and launchers.overlay_pane() == actual_focus then
+		-- The tab keeps showing the pane the overlay floats over, not the transient overlay block.
+		local tab = cx.session:tab_of(actual_focus)
+		if tab then focused_by_tab[tab]=launchers.overlay_owner() end
+	elseif actual_focus and not owned[actual_focus] then
 		local tab = cx.session:tab_of(actual_focus)
 		if tab then focused_by_tab[tab]=actual_focus end
 	end
@@ -1064,6 +1102,10 @@ local function render(cx, infos, reveal_target, visible_only)
 	data.sidebar_pane = active and pending[cx.session:tab_of(active)]
 	data.now=tern.now()
 	data.quotas, data.quota_state = quotas, quota_state
+	-- Tern's native inbox: panes with an unseen alert. Cheap, and exactly what the native bell counts.
+	data.inbox_count = 0
+	for _,pane in panes do if pane.alert then data.inbox_count += 1 end end
+	data.update_ready = update_ready
 	-- The status line is global: counts from this refresh plus the lowest fresh quota.
 	chrome_running, chrome_waiting = data.running or 0, data.waiting or 0
 	chrome_done = 0
@@ -1089,6 +1131,8 @@ local function render(cx, infos, reveal_target, visible_only)
 	end
 	data.quota_now = if quota_epoch and quota_epoch_at then quota_epoch+tern.now()-quota_epoch_at else nil
 	data.shortcuts = shortcuts
+	-- Built-in Tern blocks always sit in the footer row; the picker pins extra plugin shortcuts after them.
+	data.native_blocks = launchers.native
 	data.sidebar_settings = sidebar_settings
 	data.workspace_expanded = workspace_expanded
 	data.workspace_lift = workspace_lift
@@ -1111,14 +1155,100 @@ local function render(cx, infos, reveal_target, visible_only)
 	for _,entry in data.closed do ensure_color(entry.project) end
 	if colors_added then tern.kv.set("project_colors",project_colors_store) end
 	data.project_colors = project_colors_store.colors
+	-- Parked panes per workspace. A parked pane has no tab, so assign it by folder: its cwd against
+	-- the workspace's open panes and its saved project folder (exact folder wins, then a parent or child).
+	local parked = {}
+	do
+		local tabs_by_project = {}
+		for _,project in data.projects do
+			local set={}
+			for _,tab in project.tabs do set[tab.id]=true end
+			tabs_by_project[project.id]=set
+		end
+		local function norm(path) return string.lower((string.gsub(path or "", "/+$", ""))) end
+		local function score(project, cwd)
+			local value = 0
+			local function consider(path)
+				if type(path) ~= "string" or path == "" then return end
+				local seen = norm(path)
+				if seen == cwd then value = 2
+				elseif value < 1 and (under(seen, cwd) or under(cwd, seen)) then value = 1 end
+			end
+			consider(project_paths[string.format("%.0f", project.id)])
+			local project_tabs = tabs_by_project[project.id]
+			for _,pane in panes do
+				if pane.tab and project_tabs[pane.tab] and not owned[pane.pane] then consider(pane.cwd) end
+			end
+			return value
+		end
+		for _,pane in panes do
+			if not pane.parked or owned[pane.pane] then continue end
+			local cwd = norm(pane.cwd)
+			if cwd == "" then continue end
+			local best_id, best_score
+			for _,project in data.projects do
+				local value = score(project, cwd)
+				if value > 0 and (not best_score or value > best_score) then best_id, best_score = project.id, value end
+			end
+			if not best_id then continue end
+			local list = parked[best_id]
+			if not list then list = {}; parked[best_id] = list end
+			list[#list+1] = {pane=pane.pane, title=pane.title or "Block", kind=pane.kind, cwd=pane.cwd}
+		end
+		for _,list in parked do table.sort(list, function(a,b) return a.title < b.title end) end
+	end
+	data.parked = parked
+	data.park_open = launchers.park_open
+	-- Durable tree history: save what is open now, and offer to rebuild what a reset took away.
+	local live_tree = {projects={}}
+	do
+		local pane_by_id = {}
+		for _,pane in panes do pane_by_id[pane.pane]=pane end
+		for _,project in data.projects do
+			local path = roots_by_session[project.id] or project_paths[string.format("%.0f",project.id)]
+			local tabs = {}
+			for _,tab in project.tabs do
+				local pane = pane_by_id[tab.pane]
+				if not pane then continue end
+				local mapping = pane_sessions[string.format("%.0f",tab.pane)]
+				local layout = layouts[tab.id]
+				local clean = layout and model.clean_layout(layout.root, owned)
+				local tab_panes = {}
+				local function leaves(node)
+					if type(node) ~= "table" then return end
+					if node.pane then
+						local info = pane_by_id[node.pane]
+						local session = pane_sessions[string.format("%.0f",node.pane)]
+						tab_panes[tostring(node.pane)] = {cwd=info and info.cwd, session=session and session.session,
+							title=info and info.title, kind=info and info.kind}
+						return
+					end
+					leaves(node[1]); leaves(node[2])
+				end
+				leaves(clean)
+				table.insert(tabs,{title=tab.name or pane.title,kind=pane.kind,cwd=pane.cwd,session=mapping and mapping.session,
+					pane=tab.pane,layout=clean,panes=tab_panes})
+			end
+			table.insert(live_tree.projects,{name=project.name,path=path,tabs=tabs})
+		end
+	end
+	local history_now = tern.now()
+	if launchers.history.should_save(live_tree,history_now) then
+		tern.kv.set("tree_history",launchers.history.merge(tern.kv.get("tree_history"),live_tree,history_now))
+	end
+	local restore_plan = launchers.history.plan_cached(tern.kv.get("tree_history"),live_tree,
+		function(path) return tern.fs.exists(path) end,history_now)
+	launchers.history_plan = restore_plan
+	data.restore_tree = restore_plan.projects_count
+	data.restore_tabs = restore_plan.tabs_count
 	local selected = cx.session:focused()
 	-- True focus wins for the highlight. A background prewarm render passes reveal_target
 	-- and must keep its deliberately selected content; everywhere else the visible content
 	-- pane is the truth, even if a navigation intent got stuck before focus landed.
-	if not reveal_target and not reveal_intent and selected and not owned[selected] then
+	if not reveal_target and not reveal_intent and selected and not owned[selected] and launchers.overlay_pane() ~= selected then
 		selected_content = selected
 	end
-	if not selected_content and selected and not owned[selected] then selected_content=selected end
+	if not selected_content and selected and not owned[selected] and launchers.overlay_pane() ~= selected then selected_content=selected end
 	local highlight = reveal_target or reveal_intent or selected_content or selected
 	reveal_intent = nil
 	subtree_cache.begin()
@@ -1174,7 +1304,6 @@ local function render(cx, infos, reveal_target, visible_only)
 	local patchable=#changes>0 and #changes<=24
 	for _,key in changes do if string.sub(key,1,6)=="quota:" then patchable=false; break end end
 	local function push(pane)
-		pushed_at[pane]=tern.now()
 		if is_canvas[pane] then
 			local ok=pcall(cx.canvas.set,cx.canvas,pane,{view=tree})
 			if ok then last[pane], last_structure[pane] = signature, get_structure() end
@@ -1345,7 +1474,7 @@ end
 local function screen_key(cx, infos)
 	local parts = {
 		tostring(cx.session:focused()), tostring(selected_content), hosts_key(cx),
-		tostring(quota_epoch), tostring(quota_state), quotas_key(),
+		tostring(quota_epoch), tostring(quota_state), quotas_key(), tostring(update_ready),
 		fingerprint(sidebar_settings), tostring(workspace_lift),
 		fingerprint(workspace_expanded), fingerprint(subagents_expanded),
 	}
@@ -1784,6 +1913,8 @@ end
 
 local function close_last_pane(cx)
 	local pane=cx.session:focused()
+	-- The overlay block parks the pane it covers; closing it puts that pane back instead of tearing the tab down.
+	if pane and launchers.is_overlay(cx,pane) then launchers.finish(cx); refresh(cx); return true end
 	local tab=pane and not owned[pane] and cx.session:tab_of(pane)
 	local sidebar=tab and pending[tab]
 	if not sidebar then return false end
@@ -1820,6 +1951,99 @@ local function toggle_sidebar(cx)
 end
 tern.command({id="toggle", title="Toggle Switchboard sidebar", run=toggle_sidebar})
 tern.command({id="sb", title="SB: toggle Switchboard sidebar", run=toggle_sidebar})
+-- Rebuilds the projects a daemon reset took away from the saved tree; their agent tabs are kept as
+-- resumable Closed cards, so a restore never spawns a dozen omp processes on its own.
+launchers.restore_tree = function(cx)
+	local plan = launchers.history_plan
+	if not plan or #(plan.projects or {}) == 0 then
+		cx:toast("info","Saved tree matches what is open","Nothing to restore.")
+		return
+	end
+	local queue = {}
+	for _,project in plan.projects do table.insert(queue,project) end
+	local projects,kept,tabs,agents = 0,0,0,0
+	-- Rebuilding every saved split would spawn dozens of omp processes; agent panes are the only leaves
+	-- worth restoring (a shell-only split is just blank panes). Everything beyond the budget stays Closed.
+	local tab_budget,agent_budget = 15,12
+	local function seed(project)
+		for _,tab in project.tabs or {} do
+			local sessions={}
+			if type(tab.panes)=="table" then
+				for _,pane in tab.panes do
+					if type(pane)=="table" and type(pane.session)=="string" then table.insert(sessions,pane.session) end
+				end
+			end
+			if type(tab.session)=="string" then table.insert(sessions,tab.session) end
+			for _,session in sessions do
+				local known=false
+				for _,entry in agent_history do if entry.session==session then known=true;break end end
+				if not known then
+					table.insert(agent_history,1,{pane=nil,name=tab.title or project.name,project=project.name,
+						cwd=tab.cwd or project.path,session=session,at=tern.now(),live=false})
+					kept+=1
+				end
+			end
+		end
+	end
+	local function spec_for(tab,project)
+		local function leaf(node)
+			if type(node) ~= "table" then return {launch={cwd=project.path}} end
+			if node.pane then
+				local info = type(tab.panes)=="table" and tab.panes[tostring(node.pane)]
+				if type(info)=="table" and type(info.session)=="string" and agent_budget > 0 then
+					agent_budget -= 1
+					agents += 1
+					return {launch={cwd=info.cwd or project.path,
+						command=string.format("%q --resume %s",omp_cmd(nil),info.session)}}
+				end
+				return {launch={cwd=(type(info)=="table" and info.cwd) or project.path}}
+			end
+			if type(node[1])~="table" or type(node[2])~="table" then return {launch={cwd=project.path}} end
+			return {split=node.split,ratio=node.ratio,[1]=leaf(node[1]),[2]=leaf(node[2])}
+		end
+		return leaf(tab.layout)
+	end
+	local function open_tabs(nextCx,project)
+		for _,tab in project.tabs or {} do
+			if tabs >= tab_budget or agent_budget <= 0 then break end
+			if not launchers.history.has_agents(tab) then continue end
+			local ok,id = pcall(nextCx.layout.tab,nextCx.layout,spec_for(tab,project),{focus=false})
+			if ok and id then
+				tabs += 1
+				pcall(nextCx.layout.name_tab,nextCx.layout,id,tab.title)
+			end
+		end
+	end
+	local function step(nextCx)
+		if not nextCx then return end
+		local project = table.remove(queue,1)
+		if not project then
+			tern.kv.set("agent_history",agent_history)
+			launchers.history.invalidate_plan()
+			refresh(nextCx)
+			nextCx:toast("success","Restored saved tree",
+				tostring(projects).." projects · "..tostring(tabs).." tab"..(if tabs==1 then "" else "s")..
+				" · "..tostring(agents).." agent"..(if agents==1 then "" else "s").." resumed · "..tostring(kept).." kept in Closed")
+			return
+		end
+		local session
+		pcall(function() session = nextCx.sessions:create({name=project.name,cwd=project.path}) end)
+		projects += 1
+		seed(project)
+		tern.timer(0,function(later)
+			if not later then return end
+			if session and later.sessions:current().id ~= session.id then pcall(later.sessions.switch,later.sessions,session) end
+			-- The session switch applies a frame late; open its tabs after that.
+			tern.timer(0,function(final)
+				if not final then return end
+				open_tabs(final,project)
+				step(final)
+			end)
+		end)
+	end
+	step(cx)
+end
+
 tern.command({id="new-chat-tab", title="Switchboard: new chat in a new tab", run=function(cx)
 	local focused=cx.session:focused()
 	local path
@@ -1868,6 +2092,7 @@ tern.command({id="next-agent",title="Switchboard: next agent",run=function(cx)na
 tern.command({id="previous-agent",title="Switchboard: previous agent",run=function(cx)navigate(cx,keyboard.previous(visible_agents,cx.session:focused()))end})
 tern.command({id="shortcuts",title="Switchboard: keyboard shortcuts",run=shortcut_guide})
 tern.command({id="inbox",title="Switchboard: Tern needs you",run=function(cx)cx:action("inbox")end})
+tern.command({id="restore-tree",title="Switchboard: restore saved tree",run=function(cx)launchers.restore_tree(cx)end})
 for _,binding in {{"alt+j","next-agent"},{"alt+k","previous-agent"},{"alt+shift+n","new-chat-tab"},{"alt+/","shortcuts"},{"alt+shift+s","toggle"}} do
 	tern.bind(binding[1],"plugin.switchboard." .. binding[2])
 end
@@ -1903,7 +2128,36 @@ local function workspace_for_path(cx, path)
 	return best
 end
 local function sidebar_action(ev, cx)
+	-- Runs a palette action only when Tern currently offers it; a disabled plugin action says why instead of failing.
+	local function run_action(id,label)
+		for _, action in cx.actions:list() do
+			if action.id == id and action.available then cx:action(id); return true end
+		end
+		cx:toast("info", "Enable " .. label .. " in Tern Settings → Plugins")
+		return false
+	end
+	-- A footer click focuses the sidebar block, and blocks open beside the focused block: move to this tab's
+	-- content pane first, or the new block lands beside the sidebar.
+	local function focus_content()
+		local focused = cx.session:focused()
+		if not use_host(cx,host_of(cx,"panes",focused)) or not focused then return nil end
+		if owned[focused] then
+			local tab = cx.session:tab_of(focused)
+			for _, p in cx.session:panes() do
+				if p.tab == tab and not owned[p.pane] then cx.layout:focus(p.pane); return p.pane end
+			end
+		end
+		return focused
+	end
 	if ev.owner ~= PLUGIN_ID then return false end
+	local park_target = string.match(ev.act,"^park%-open:(%d+)$")
+	if park_target then
+		-- A click pins the card open until the badge is clicked again or another workspace action runs.
+		launchers.park_open = if launchers.park_open == park_target then nil else park_target
+		refresh(cx)
+		return true
+	end
+	launchers.park_open = nil
 	if ev.act == "switchboard.sidebar.resync" then
 		if ev.pane and sidebar_snapshot then
 			pcall(function() cx.session:event(ev.pane,{ev="action",act="switchboard.sidebar.update",value=sidebar_snapshot}) end)
@@ -2100,6 +2354,8 @@ local function sidebar_action(ev, cx)
 		refresh(cx)
 		return true
 	end
+	if ev.act == "restore-tree" then launchers.restore_tree(cx); return true end
+	if ev.act == "update" then cx:action("restart_to_update"); return true end
 	if ev.act == "inbox" then cx:action("inbox"); return true end
 	if ev.act == "clear-history" then
 		-- Forgets closed agents only; live ones are recorded again by the next render.
@@ -2141,16 +2397,18 @@ local function sidebar_action(ev, cx)
 			table.insert(items, {label="Remove " .. item.label,group="Your shortcuts",remove=i})
 		end
 		for _, action in cx.actions:list() do
-			if action.plugin and action.plugin ~= PLUGIN_ID and action.available then
+			-- Native Tern blocks first: task manager, board, git, browser, databases, notebooks, …
+			local native = not action.plugin and launchers.native_by_id(action.id)
+			if native and action.available then
+				table.insert(items, {label=native.label, group="Tern blocks", shortcut={label=native.label,icon=native.icon,action=action.id}})
+			elseif action.plugin and action.plugin ~= PLUGIN_ID and action.available then
 				table.insert(items, {label=action.label, group=action.group, shortcut={label=action.label,icon="plug",action=action.id}})
 			end
 		end
-		for _, block in cx.session:block_types() do
-			if block.palette and string.sub(block.kind,1,5) ~= "tern." then
-				table.insert(items,{label=block.title, group="Plugin blocks",shortcut={label=block.title,icon=block.icon,block=block.kind}})
-			end
+		for _, block in launchers.plugin_blocks(cx, tern.now()) do
+			table.insert(items,{label=block.label, group="Plugin blocks",shortcut={label=block.label,icon=block.icon,block=block.kind}})
 		end
-		cx:pick({items=items,placeholder="Add a plugin shortcut, or remove one"}):next(function(item, _, nextCx)
+		cx:pick({items=items,placeholder="Add a shortcut, or remove one"}):next(function(item, _, nextCx)
 			if not item then return end
 			if item.remove then table.remove(shortcuts,item.remove)
 			else
@@ -2164,29 +2422,63 @@ local function sidebar_action(ev, cx)
 		end)
 		return true
 	end
+	local native_launch = string.match(ev.act,"^launch%-native:([%w_%-]+)$")
+	if native_launch then
+		local entry = launchers.native_by_id(native_launch)
+		-- A second tile replaces the overlay: put the previous covered pane back before choosing the next target.
+		if launchers.overlay_pane() then launchers.finish(cx) end
+		local over = entry and focus_content()
+		if not over then return true end
+		if entry.glimpse then
+			-- Git has a real centered glimpse; the pane id picks the repository of the focused content.
+			local ok, opened = pcall(function() return cx.git:open(over, {how = "glimpse"}) end)
+			if ok then
+				opened:next(function(_, err, nextCx) if err and nextCx then nextCx:toast("info", "No git repository here", tostring(err)) end end)
+			else
+				run_action(entry.action, entry.label)
+			end
+		else
+			-- Everything else opens as a split; the module floats it and styles it into a centered window.
+			launchers.begin(cx, entry, over, owned, function() return run_action(entry.action, entry.label) end)
+		end
+		return true
+	end
+	local block_launch = string.match(ev.act,"^launch%-block:([%w_.%-]+)$")
+	if block_launch then
+		if focus_content() then
+			local pane = cx:new_block(block_launch, {}, "glimpse")
+			if not pane then cx:toast("info", "Enable that plugin in Tern Settings → Plugins") end
+		end
+		return true
+	end
 	local launch = tonumber(string.match(ev.act,"^launch:(%d+)$"))
 	if launch then
 		local shortcut = shortcuts[launch]
 		if not shortcut then return true end
-		local focused = cx.session:focused()
-		if not use_host(cx,host_of(cx,"panes",focused)) then return true end
-		if focused and owned[focused] then
-			local tab = cx.session:tab_of(focused)
-			for _, p in cx.session:panes() do
-				if p.tab == tab and not owned[p.pane] then cx.layout:focus(p.pane); break end
-			end
-		end
+		if not focus_content() then return true end
 		if shortcut.block then
 			local pane = cx:new_block(shortcut.block,{},"glimpse")
 			if not pane then cx:toast("info", "Enable " .. shortcut.label .. " in Tern Settings → Plugins") end
 		else
-			local available = false
-			for _, action in cx.actions:list() do
-				if action.id == shortcut.action and action.available then available = true; break end
-			end
-			if available then cx:action(shortcut.action)
-			else cx:toast("info", "Enable " .. shortcut.label .. " in Tern Settings → Plugins") end
+			run_action(shortcut.action, shortcut.label)
 		end
+		return true
+	end
+	local unpark_pane, unpark_project = string.match(ev.act,"^unpark:(%d+):(%d+)$")
+	if unpark_pane then
+		local pane,project = tonumber(unpark_pane),tonumber(unpark_project)
+		if not cx.session:pane(pane) then cx:toast("info","Block is gone"); refresh(cx); return true end
+		if not use_host(cx,host_of(cx,"panes",pane)) then return true end
+		local function deal(nextCx)
+			if not nextCx or not nextCx.session:pane(pane) then return end
+			pcall(nextCx.layout.unpark,nextCx.layout,pane,{focus=true})
+			refresh(nextCx)
+		end
+		if project and cx.sessions:current().id ~= project then
+			-- The session switch applies on the next frame; unparking before it would deal into the wrong tab.
+			pcall(cx.sessions.switch,cx.sessions,project)
+			tern.timer(0,function(nextCx) if nextCx then deal(nextCx) end end)
+		else deal(cx) end
 		return true
 	end
 	if ev.act == "new-workspace" then
@@ -2273,6 +2565,8 @@ end
 
 for _, event in {"focus", "pane_created", "pane_closed", "tab_created", "tab_closed", "agent_state", "agent_finished", "title", "cwd", "session_ended"} do
 	tern.on(event, function(ev, cx)
+		if event=="pane_created" then launchers.created(cx,owned)
+		elseif event=="pane_closed" then launchers.closed(cx,ev.pane) end
 		if event=="tab_closed" and next(closed_tabs_to_check)~=nil then
 			if jump_clock then jump_clock:cancel();jump_clock=nil end
 			if close_check then close_check:cancel();close_check=nil end
@@ -2295,7 +2589,8 @@ for _, event in {"focus", "pane_created", "pane_closed", "tab_created", "tab_clo
 		if event == "focus" and cx.session:focused() ~= ev.pane then return end
 		-- Any focus on a content pane becomes the highlight, even when an earlier
 		-- navigation intent never landed; a stuck intent must not freeze the selection.
-		if event == "focus" and not owned[ev.pane] then
+		-- The centered overlay is transient: it must not become the tab's representative pane or the sidebar highlight.
+		if event == "focus" and not owned[ev.pane] and launchers.overlay_pane()~=ev.pane then
 			if reveal_intent and reveal_intent~=ev.pane then reveal_intent=nil end
 			selected_content=ev.pane
 			local tab=ev.tab or cx.session:tab_of(ev.pane)
@@ -2384,6 +2679,10 @@ local function poll(cx)
 		discover(cx)
 		if next(owned)~=nil then enabled=true;tern.kv.set("enabled",true) end
 	end
+	launchers.sync(cx)
+	local previous_update=update_ready
+	read_update()
+	if update_ready~=previous_update then refresh_due=true end
 	t = lap("poll prelude", t)
 	if cx and enabled then
 		local focus=cx.session:focused()

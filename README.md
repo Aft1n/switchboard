@@ -29,7 +29,7 @@ state, progress and provider quota rings.
 2. **Workspaces**: your Tern sessions with their tabs and layout thumbnails. Recent ones sort first; drag to reorder; hover to close.
 3. **Agents**: one card per running agent: title, host, project, model, state and the latest step or todo bar. Closed agents stay dimmed until you sweep them with the broom.
 4. **Summary line**: running and needs-input counts.
-5. **Footer**: plugin shortcuts, then provider quota rings and settings.
+5. **Footer**: pinned plugin shortcuts in a sideways-scrolling row, then a separate grid button whose hover card holds built-in Tern blocks as three category columns of icon tiles (task manager, board, git and more) that open as centered overlays (⇧⌘↵ expands, Return to split makes a real block), then the add button. Provider quota rings and settings sit below.
 
     </td>
   </tr>
@@ -49,6 +49,8 @@ Quota rings and OMP agents need OMP installed. Other coding harnesses are detect
 - Every Tern session is a workspace. Workspaces touched in the last 24 hours sort first, newest first: switching into one, opening a tab in it, or an agent working there refreshes it.
 - Reorder by dragging: hover a workspace, click its grip (the folder icon), then click the row it should go above. Click the grip again to cancel. Your order wins for the workspaces it lists; new ones append.
 - Hover a workspace and click its x to close it. A workspace with open tabs asks first, because closing ends their programs.
+- Workspaces with parked panes show a count badge; hover it for a card of the parked blocks (Tern's kind names and folders), and click one to unpark it into that workspace.
+- Switchboard keeps a tree history: if a Tern reset drops projects, a "Restore saved tree" button in Workspaces (or the palette command) recreates them from the last known folders; agent tabs return as resumable Closed cards.
 - Each project name gets one of 36 colors, shared by its workspace row and its agent cards. Red is never used, since it means urgent or needs input.
 
 ## Agents
