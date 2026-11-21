@@ -27,7 +27,7 @@ state, progress and provider quota rings.
 
 1. **Header**: the host chip (`LOCAL` / `VPS`; click to switch host) and the new-workspace button.
 2. **Workspaces**: your Tern sessions with their tabs and layout thumbnails. Recent ones sort first; drag to reorder; hover to close.
-3. **Agents**: one card per running agent: title, host, project, model, state and the latest step or todo bar. Closed agents stay dimmed until you sweep them with the broom.
+3. **Agents**: the pin button in the header opens a card board of pinned agents, then one card per running agent: title, host, project, model, state and the latest step or todo bar. Closed agents stay dimmed until you sweep them with the broom.
 4. **Summary line**: running and needs-input counts.
 5. **Footer**: pinned plugin shortcuts in a sideways-scrolling row, then a separate grid button whose hover card holds built-in Tern blocks as three category columns of icon tiles (task manager, board, git and more) that open as centered overlays (⇧⌘↵ expands, Return to split makes a real block), then the add button. Provider quota rings and settings sit below.
 
@@ -41,8 +41,29 @@ state, progress and provider quota rings.
 tern plugin install github.com/Aft1n/switchboard
 ```
 
-Update with the same command plus `--force`; remove with `tern plugin remove switchboard`.
 Quota rings and OMP agents need OMP installed. Other coding harnesses are detected without it.
+
+## Update
+
+```sh
+tern plugin install github.com/Aft1n/switchboard --force
+```
+
+`--force` replaces the installed copy with the latest `main`; Tern reloads the daemon's plugins after the install. If the sidebar still shows the old build, reload it:
+
+```sh
+tern plugin reload switchboard
+```
+
+Check the loaded version with `tern plugin list`.
+
+For a checkout you linked for development, pull and reload instead:
+
+```sh
+tern plugin reload switchboard
+```
+
+To remove it: `tern plugin remove switchboard`.
 
 ## Workspaces
 
@@ -60,6 +81,7 @@ Quota rings and OMP agents need OMP installed. Other coding harnesses are detect
 - Other coding harnesses (Claude Code, Codex, pi, OpenCode and similar) in terminal panes are listed too, best-effort: local panes by a process scan, remote panes by their titles. Their states come from screen activity, so treat "running" as approximate.
 - Rows move only on real state changes (first seen, running, needs input, finished). Transcript updates never reorder them, and agents that need input stay pinned at the top.
 - Closed agents stay in the list, dimmed. Click one with a session id to reopen it with `omp --resume`. The broom in the Agents header clears closed entries; it never touches running agents.
+- Pin an agent from the pin button on its card, or pin an already-closed agent from its Closed card. The pin button in the Agents header carries the pinned count; click it to open a board of detailed pinned cards (agent name, project, state, current step or todo; model and folder are in the hover tooltip). The cards fill the sidebar width and wrap into columns only when there is room for the names. A live card focuses its pane; a closed card with a session reopens with `omp --resume`. Unpin from the board. Pins are kept across reloads and tab closes, and the broom leaves them alone.
 - Subagents: a parent with children shows a footer with the child count (and how many are running). Expand it to see the children indented beneath. Click a child to focus its thread in the parent's agent pane, and "Back to the main session" returns. Children are found from OMP task ids, never by name.
 - `/new` in OMP starts a new session in the same pane. Switchboard keeps the pane where it is and moves the previous session to Closed, where a click reopens it with `omp --resume`.
 - For a guaranteed parallel chat, use `alt+shift+n`: it starts a fresh omp process in a new tab and never touches the chat you are in.

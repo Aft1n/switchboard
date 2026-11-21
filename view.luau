@@ -125,6 +125,12 @@ function M.render(ui, data, focused, cache)
 		node.p.key = key
 		return node
 	end
+	-- A pin's stable handle: its session, else first sight + pane. The window parses the same format.
+	local function pin_ref(entry, index)
+		local session = entry.session
+		if type(session) == "string" and session ~= "" then return "s:" .. session end
+		return "a:" .. string.format("%.0f", entry.at or index) .. ":" .. string.format("%.0f", entry.pane or 0)
+	end
 	-- Tern's own brand icons mark non-omp harnesses; omp rows keep the glyph in their title.
 	local function harness_mark(key)
 		local name = terminal_agents.ICONS[key]
@@ -276,7 +282,7 @@ function M.render(ui, data, focused, cache)
 			a.host and join(a.host.id, a.host.kind, a.host.state, a.host.name) or "-",
 			a.isolation and join(a.isolation.kind, a.isolation.dirty, a.isolation.name, a.isolation.detail) or "-",
 			a.activity_status, a.unavailable, a.harness, a.cwd,
-			show_hosts, show_steps, a.pane == focused,
+			show_hosts, show_steps, a.pane == focused, a.pinned,
 			todo and todo.done or "-", todo and todo.total or "-",
 			color_class, sub_open, progress_key(p), subagents_key(subagents)
 		)
@@ -343,17 +349,25 @@ function M.render(ui, data, focused, cache)
 		agent.p.key="agent" .. pane_key
 		agent.p.aria = a.name .. " · " .. state_label .. (if a.host then " · " .. a.host.kind .. " · " .. a.host.name else "")
 		agent.p.attrs = {["aria-pressed"]=if a.pane == focused then "true" else "false"}
-		-- Same pattern as a workspace tab row: a sibling x (never nested in the card button) that closes the agent's tab.
-		local function with_close(card)
+		-- Same pattern as a workspace tab row: sibling controls (never nested in the card button) that
+		-- pin the agent and close its tab.
+		local function with_controls(card)
+			local pin_title = (if a.pinned then "Unpin " else "Pin ") .. a.name
+			local pin = ui.button("", {
+				icon="pin", title=pin_title, aria=pin_title,
+				role="switchboard.agent-pin", variant="quiet", size="sm", on=a.pinned == true,
+				actions={click="pin-agent:" .. pane_key},
+			})
+			pin.p.key = "pin-agent" .. pane_key
 			local close = ui.button("", {
 				icon="x", title="Close tab", aria="Close " .. a.name,
 				role="switchboard.agent-close", variant="quiet", size="sm",
 				actions={click="close-agent:" .. pane_key},
 			})
 			close.p.key = "close-agent" .. pane_key
-			return ui.el("div", {class="cp-agent-row"}, {card, close})
+			return ui.el("div", {class="cp-agent-row"}, {card, pin, close})
 		end
-		if #subagents == 0 then return with_close(agent) end
+		if #subagents == 0 then return with_controls(agent) end
 
 		local parent_pane = pane_key
 		local expanded = data.subagents_expanded and data.subagents_expanded[parent_pane] == true
@@ -409,7 +423,7 @@ function M.render(ui, data, focused, cache)
 			end
 			table.insert(branch_children, ui.el("div", {class="cp-subagents", key="subagents" .. parent_pane}, child_cards))
 		end
-		return with_close(ui.el("div", {class="cp-agent-parent-row", key="agent-row" .. parent_pane}, {agent, ui.el("div", {class="cp-subagent-branch", key="subagent-branch" .. parent_pane}, branch_children)}))
+		return with_controls(ui.el("div", {class="cp-agent-parent-row", key="agent-row" .. parent_pane}, {agent, ui.el("div", {class="cp-subagent-branch", key="subagent-branch" .. parent_pane}, branch_children)}))
 		end)
 	end
 	for _, a in data.agents do table.insert(agents,render_agent(a)) end
@@ -422,7 +436,8 @@ function M.render(ui, data, focused, cache)
 	if seen_closed[dup_key] then continue end
 	seen_closed[dup_key] = true
 		local color_class = entry.project and project_colors.class((data.project_colors or {})[entry.project]) or "-"
-		local signature = join("closed", entry.session, entry.name, entry.project, entry.model, entry.pane, entry.cwd, color_class)
+		-- `at` is part of the pin ref for sessionless history, so a changed ref rebuilds the row.
+		local signature = join("closed", entry.session, entry.name, entry.project, entry.model, entry.pane, entry.cwd, entry.at, color_class)
 		-- Identity, not list position: a closed card keeps its slot when others open or close, so
 		-- the sidebar shell does not change and only the touched card is patched.
 		local closed_key = tostring(entry.session or entry.pane or i)
@@ -442,9 +457,106 @@ function M.render(ui, data, focused, cache)
 			if resumable then node.p.aria = entry.name .. " · Click to reopen session" end
 			return node
 		end)
-		table.insert(agents, card)
+		-- The closed card has no close x, so its pin sits alone on the right. The row is its
+		-- own slot, so a repaint with nothing changed builds no nodes.
+		local ref = pin_ref(entry, i)
+		local row_sig = join(signature, ref, entry.name)
+		local row = cached(cache, "closed-row:" .. closed_key, row_sig, function()
+			local pin = ui.button("", {
+				icon="pin", title="Pin " .. (entry.name or "agent"), aria="Pin " .. (entry.name or "agent"),
+				role="switchboard.closed-pin", variant="quiet", size="sm",
+				actions={click="pin-closed:" .. ref},
+			})
+			pin.p.key = "pin-closed:" .. closed_key
+			return ui.el("div", {class="cp-agent-row cp-closed-row", key="closed-row:" .. closed_key}, {card, pin})
+		end)
+		table.insert(agents, row)
 	end
 	if #agents == 0 then table.insert(agents, el("p", "cp-empty", nil, "No agents detected\nAgents appear here when opened in Tern.")) end
+	-- Pins live on their own board under the Agents heading. It is always in the DOM (hover
+	-- reveals it) and only its open class changes with a click.
+	local pins = data.pinned or {}
+	local pin_cards, pin_sig = {}, {}
+	do
+		local live_by_pane = {}
+		for _, a in data.agents do live_by_pane[string.format("%.0f", a.pane)] = a end
+		for index, pin in pins do
+			local pane_key = if pin.pane ~= nil then string.format("%.0f", pin.pane) else nil
+			local live = if pin.live == true and pane_key then live_by_pane[pane_key] else nil
+			local state = if live then tostring(live.state or "idle") else "closed"
+			local state_label = if live then (LABELS[state] or state) else "Closed"
+			local resumable = not live and type(pin.session) == "string" and pin.session ~= ""
+			local hot = live ~= nil and live.pane == focused
+			local color_class = project_colors.class(pin.project and (data.project_colors or {})[pin.project])
+			local ref = pin_ref(pin, index)
+			-- `at` can repeat (several agents first seen in one update); session or cwd+pane keeps slot keys unique.
+			local pin_id = pin.session or table.concat({string.format("%.0f", pin.at or index), pane_key or "-", pin.cwd or ""}, ":")
+			local p = live and live.progress
+			local todo = if live then progress.visible_todo(p, live.state, live.progress_completed_at, data.now) else nil
+			local hint = {pin.name or "Agent", state_label}
+			if pin.project and pin.project ~= "" then table.insert(hint, pin.project) end
+			if pin.model then table.insert(hint, pin.model) end
+			if pin.cwd and pin.cwd ~= "" then table.insert(hint, pin.cwd) end
+			table.insert(hint, if live then "Click to focus" elseif resumable then "Click to reopen" else "No session to reopen")
+			local signature = join(
+				pin.name, pin.project, pin.model, pin.cwd, pin.session, pin.live, state, state_label, ref,
+				color_class or "-", hot, resumable, live and live.activity_status or "-", live and live.unavailable or "-",
+				todo and todo.done or "-", todo and todo.total or "-", progress_key(p)
+			)
+			pin_sig[#pin_sig + 1] = signature
+			local card = cached(cache, "pin:" .. pin_id, signature, function()
+				-- Project and state stay; model and folder are in the hover tooltip.
+				local meta = {project_text(pin.project, "cp-pin-card-project")}
+				table.insert(meta, text("cp-pin-card-state", state_label))
+				local content = {
+					-- State stays on the metadata line so the agent name owns the full head width.
+					el("div", "cp-pin-card-head", {
+						text("cp-pin-dot", "●"),
+						text("cp-pin-card-name", pin.name or "Agent"),
+					}),
+					el("div", "cp-pin-card-meta", meta),
+				}
+				if live and p and #p.steps > 0 then
+					local step = p.steps[#p.steps]
+					local mark = TOOL_ICONS[step.tool or ""] or (if step.status == "failed" then "error" elseif step.status == "running" then "timer" elseif step.status == "done" then "check" else "minus")
+					table.insert(content, el("div", "cp-step cp-step-" .. step.status, {icon(mark, "cp-step-icon"), text("cp-step-label", step.label)}))
+				elseif live and (live.activity_status or live.unavailable) then
+					table.insert(content, text("cp-activity-label", ACTIVITY_LABELS[live.activity_status] or "Activity unavailable"))
+				end
+				if todo then
+					local count = tostring(todo.done) .. " / " .. tostring(todo.total)
+					local count_node = text("cp-progress-count", count)
+					count_node.p.title = tostring(todo.done) .. " of " .. tostring(todo.total) .. " tasks done"
+					local meter = ui.node("meter", {value=todo.done/todo.total, size="sm", role="switchboard.progress", tone="accent", aria=count .. " tasks completed"})
+					table.insert(content, el("div", "cp-agent-progress", {meter, count_node}))
+				end
+				local action = if live then "pane:" .. pane_key elseif resumable then "resume-session:" .. pin.session else nil
+				local node = el(if action then "button" else "div",
+					"cp-pin-card cp-pin-" .. state .. (if live then "" else " cp-pin-card-closed") .. (if hot then " cp-pin-card-focused" else ""),
+					content, nil, action)
+				node.p.key = "pin-card:" .. pin_id
+				node.p.title = table.concat(hint, " · ")
+				node.p.aria = node.p.title
+				local unpin = ui.button("", {
+					icon="pin", title="Unpin " .. (pin.name or "agent"), aria="Unpin " .. (pin.name or "agent"),
+					role="switchboard.agent-unpin", variant="quiet", size="sm", on=true,
+					actions={click="unpin-pin:" .. ref},
+				})
+				unpin.p.key = "unpin:" .. pin_id
+				return ui.el("div", {class="cp-pin-card-item", key="pin:" .. pin_id}, {node, unpin})
+			end)
+			table.insert(pin_cards, card)
+		end
+	end
+	local pin_root_sig = if #pins > 0 then table.concat(pin_sig, SEP) else "-"
+	local pin_board = cached(cache, "pin-board", join(data.pins_open == true, #pins, pin_root_sig), function()
+		local body = if #pins > 0
+			then ui.el("div", {class="cp-pin-board-grid", key="pin-board-grid"}, pin_cards)
+			else el("p", "cp-pin-board-empty", nil, "No pinned agents\nPin an agent from its card.")
+		local head = el("div", "cp-pin-board-head", {text("cp-pin-board-title", "Pinned agents"), text("cp-pin-board-count", tostring(#pins))})
+		head.p.key = "pin-board-head"
+		return ui.el("div", {class="cp-pin-board" .. (if data.pins_open then " cp-pin-board-open" else ""), key="pin-board"}, {head, body})
+	end)
 	-- The counts change with almost every agent transition; memoizing them keeps the shell
 	-- fingerprint stable so those transitions travel as a small card patch instead of a full tree.
 	local summary = cached(cache, "summary:", tostring(data.running) .. "/" .. tostring(data.waiting), function()
@@ -528,6 +640,7 @@ function M.render(ui, data, focused, cache)
 		data.sidebar_pane, data.sidebar_host, data.workspace_lift, data.quota_state,
 		data.inbox_count, data.update_ready, data.park_open, data.restore_tree, data.restore_tabs,
 		show_closed, show_steps, show_hosts, show_quotas, #shown, #data.agents, #closed,
+		data.pins_open, #pins, pin_root_sig,
 		h and join(h.id, h.kind, h.state, h.name) or "-", sizes[1], sizes[2],
 		table.concat(shortcut_sig, SEP), table.concat(park_sig, SEP), table.concat(slot_order, SEP)
 	)
@@ -552,6 +665,14 @@ function M.render(ui, data, focused, cache)
 	end
 	for _, card in park_cards do table.insert(projects_section, card) end
 	local tools = {text("cp-count",tostring(#data.agents))}
+	local pin_title = "Pinned agents · " .. (if #pins > 0 then tostring(#pins) else "none yet")
+	local pin_children = {icon("pin", "cp-pins-icon")}
+	if #pins > 0 then table.insert(pin_children, text("cp-pin-count", tostring(#pins))) end
+	local pin_toggle = el("button", "cp-pins-toggle" .. (if data.pins_open then " cp-pins-open" else ""), pin_children, nil, "toggle-pins")
+	pin_toggle.p.key = "pins-toggle"
+	pin_toggle.p.title = pin_title
+	pin_toggle.p.attrs = {["aria-label"]=pin_title}
+	table.insert(tools, pin_toggle)
 	if #closed > 0 then
 		-- Tern ships no broom icon; cp-broom-icon draws one in CSS.
 		local broom = el("button", "cp-broom", {el("span", "cp-broom-icon")}, nil, "clear-history")
@@ -569,9 +690,10 @@ function M.render(ui, data, focused, cache)
 	table.insert(tools, bell)
 	local agents_section = {
 		el("div", "cp-heading", {text("", "Agents"), el("div","cp-agent-header-tools",tools)}),
-		summary,
-		el("div", "cp-agents", agents),
+		pin_board,
 	}
+	table.insert(agents_section, summary)
+	table.insert(agents_section, el("div", "cp-agents", agents))
 	-- Custom plugin shortcuts scroll in the row; built-in Tern blocks sit behind a separate grid trigger,
 	-- and the add button is its own slot. Each built-in opens a tile in the hover card.
 	local launcher_buttons = {}

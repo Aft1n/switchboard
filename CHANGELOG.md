@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Pinned agents moved behind a pin button in the Agents header with a count badge. It opens a board of detailed pinned cards — agent name, project, state, latest step and todo; model and folder stay in the hover tooltip. Cards fill the sidebar width and wrap into columns only when names fit; each card's top-right pin-with-slash unpins without closing the tab. Live cards focus their pane, and closed cards with an omp session reopen. Closed agents can now be pinned from their Closed cards. The old strip above the list is gone; pins survive tab closes and reloads, and the broom leaves them alone.
+
 ## 0.1.8
 
 - Switchboard keeps a durable tree history in kv: every project, each tab's split layout, and every pane's omp session id. When a daemon reset or update drops projects, a "Restore saved tree" banner and the palette command `Switchboard: restore saved tree` recreate the projects, rebuild tabs that contain agents with their splits and resume those agents (bounded to 15 tabs and 12 agents, the rest stay resumable Closed cards); shell-only layouts are skipped.

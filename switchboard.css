@@ -44,6 +44,47 @@ html.lay-tiles .tn-pane:has(.switchboard) { --cp-corner:var(--tn-tile-r); }
 .switchboard .cp-agent-row { position:relative; flex:0 0 auto; min-width:0; }
 .switchboard [data-role='switchboard.agent-close'] { position:absolute; top:4px; right:4px; z-index:2; width:22px; min-width:22px; height:22px; padding:3px; opacity:0; pointer-events:none; transition:opacity 120ms ease; }
 .cp-agent-row:hover [data-role='switchboard.agent-close'], .cp-agent-row:focus-within [data-role='switchboard.agent-close'] { opacity:1; pointer-events:auto; }
+.switchboard [data-role='switchboard.agent-pin'] { position:absolute; top:4px; right:28px; z-index:2; width:22px; min-width:22px; height:22px; padding:3px; opacity:0; pointer-events:none; transition:opacity 120ms ease; }
+.cp-agent-row:hover [data-role='switchboard.agent-pin'], .cp-agent-row:focus-within [data-role='switchboard.agent-pin'] { opacity:1; pointer-events:auto; }
+/* The pin toggle sits in the Agents header; its badge counts the board. */
+.switchboard .cp-pins-toggle { position:relative; display:flex; align-items:center; justify-content:center; flex:0 0 24px; width:24px; height:24px; padding:0; border-radius:6px; background:transparent; color:var(--t3); }
+.switchboard .cp-pins-toggle:hover, .switchboard .cp-pins-toggle.cp-pins-open { color:var(--t1); background:color-mix(in srgb,var(--ink) 8%,transparent); }
+.switchboard .cp-pins-toggle .cp-pins-icon { display:flex; align-items:center; justify-content:center; }
+.switchboard .cp-pins-toggle .cp-pins-icon .sf-icon { width:13px; height:13px; }
+.switchboard .cp-pin-count { position:absolute; top:-3px; right:-4px; min-width:13px; height:13px; padding:0 3px; border-radius:7px; background:var(--accent); color:var(--panel,var(--card,Canvas)); font-size:9px; font-weight:700; line-height:13px; text-align:center; }
+/* The board overlays the list under the Agents heading; hover or click reveals it. */
+.switchboard .cp-pin-board { display:none; position:absolute; top:30px; left:4px; right:4px; z-index:2000; flex-direction:column; gap:6px; max-height:calc(100% - 34px); overflow-y:auto; padding:7px; border-radius:var(--r-panel,9px); background:var(--card,var(--raise,var(--panel))); border:1px solid var(--l2); box-shadow:0 8px 28px #0002; }
+.switchboard .cp-pin-board.cp-pin-board-open,
+.switchboard .cp-agents-section:has(.cp-pins-toggle:hover) .cp-pin-board,
+.switchboard .cp-agents-section:has(.cp-pin-board:hover) .cp-pin-board,
+.switchboard .cp-agents-section:has(.cp-pins-toggle:focus-visible) .cp-pin-board { display:flex; }
+.switchboard .cp-pin-board-head { display:flex; align-items:center; gap:8px; padding:0 2px 2px; color:var(--t3); font-size:11px; font-weight:600; }
+.switchboard .cp-pin-board-count { color:var(--t4); font-size:11px; font-weight:400; }
+.switchboard .cp-pin-board-empty { margin:0; padding:14px 10px; color:var(--t3); font-size:11px; line-height:1.55; white-space:pre-wrap; }
+/* Cards wrap to the width the sidebar gives them; flex-wrap keeps the Tern CSS parser happy (no grid templates). */
+.switchboard .cp-pin-board-grid { display:flex; flex-wrap:wrap; align-items:flex-start; gap:6px; padding:0 1px; }
+/* One full-width card when the sidebar is narrow; 2+ columns only when the names fit. */
+.switchboard .cp-pin-card-item { position:relative; flex:1 1 220px; min-width:0; }
+.switchboard .cp-pin-card { box-sizing:border-box; display:flex; flex-direction:column; align-items:stretch; flex-shrink:0; gap:4px; width:100%; min-width:0; min-height:56px; height:auto; padding:7px 8px; border-radius:7px; background:color-mix(in srgb,var(--ink) 5%,transparent); box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ink) 12%,transparent); color:var(--t2); text-align:left; white-space:normal; }
+.switchboard .cp-pin-card:hover { background:color-mix(in srgb,var(--ink) 9%,transparent); color:var(--t1); }
+.switchboard .cp-pin-card-closed { opacity:.6; border:1px dashed color-mix(in srgb,var(--ink) 22%,transparent); box-shadow:none; }
+.switchboard .cp-pin-card-focused { box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 55%,transparent); }
+.switchboard .cp-pin-card-head { display:flex; align-items:center; gap:6px; min-width:0; padding-right:20px; }
+.switchboard .cp-pin-dot { flex:0 0 auto; font-size:7px; line-height:1; color:var(--t4); }
+.switchboard .cp-pin-working .cp-pin-dot { color:var(--ok); }
+.switchboard .cp-pin-waiting_input .cp-pin-dot { color:var(--warn); }
+.switchboard .cp-pin-done .cp-pin-dot { color:var(--accent); }
+.switchboard .cp-pin-card-name { flex:1 1 auto; min-width:0; color:var(--t1); font-size:12.5px; font-weight:600; line-height:1.25; overflow-wrap:anywhere; }
+.switchboard .cp-pin-card-state { flex:0 0 auto; margin-left:auto; color:var(--t4); font-size:9px; }
+.switchboard .cp-pin-card-meta { display:flex; align-items:center; gap:6px; min-width:0; font-size:10px; }
+.switchboard .cp-pin-card-project { flex:1 1 auto; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.switchboard .cp-pin-card .cp-step-label { font-size:10px; }
+.switchboard .cp-pin-card .cp-activity-label { margin-top:0; }
+/* Unpin is always visible on a card, in its top-right corner. */
+.switchboard [data-role='switchboard.agent-unpin'] { position:absolute; top:3px; right:3px; z-index:2; width:16px; min-width:16px; height:16px; padding:1px; border-radius:50%; background:var(--page,var(--panel)); opacity:.55; transition:opacity 120ms ease; }
+.switchboard [data-role='switchboard.agent-unpin']:hover, .cp-pin-card-item:hover [data-role='switchboard.agent-unpin'] { opacity:1; }
+.switchboard [data-role='switchboard.agent-unpin'] .sf-icon { width:9px; height:9px; }
+.switchboard [data-role='switchboard.agent-unpin']::after { content:""; position:absolute; left:3px; right:3px; top:50%; height:1px; margin-top:-0.5px; border-radius:1px; background:currentColor; opacity:0.9; transform:rotate(-45deg); pointer-events:none; }
 .switchboard .cp-bell { position:relative; width:24px; height:24px; padding:0; border-radius:6px; display:flex; align-items:center; justify-content:center; background:transparent; color:var(--t3); }
 .switchboard .cp-bell:hover { color:var(--t1); background:color-mix(in srgb,var(--ink) 8%,transparent); }
 .switchboard .cp-bell-unread { color:var(--t1); }
@@ -59,7 +100,7 @@ html.lay-tiles .tn-pane:has(.switchboard) { --cp-corner:var(--tn-tile-r); }
 .cp-mini-leaf { flex-basis: 0; min-width: 0; min-height: 0; border: 1px solid color-mix(in srgb, var(--ink) 28%, transparent); border-radius: 1.5px; background: color-mix(in srgb, var(--ink) 4%, transparent); }
 .cp-mini-focused { border-color: color-mix(in srgb, var(--accent) 65%, transparent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .cp-mini-float { position: absolute; right: -2px; top: -2px; width: 12px; height: 9px; border: 1px solid var(--t3); border-radius: 2px; background: var(--page); }
-.cp-agents-section { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; overflow: hidden; padding-top: 6px; }
+.cp-agents-section { position: relative; display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; overflow: hidden; padding-top: 6px; }
 .cp-summary { display: flex; justify-content: space-between; gap: 8px; padding: 0 8px 4px; font-size: 11px; color: var(--t3); }
 .cp-live { color: var(--ok); }
 .cp-agents { display: flex; flex-direction: column; flex: 1 1 0; gap: 4px; overflow-y: auto; min-height: 0; }
@@ -295,6 +336,9 @@ html.lay-tiles .tn-pane:has(.switchboard) { --cp-corner:var(--tn-tile-r); }
 .cp-project-row.cp-picked .cp-project { background:color-mix(in srgb, var(--accent) 12%, transparent); box-shadow:inset 3px 0 0 var(--accent); }
 
 /* Closed agents stay in the Agents list, dimmed, until the broom clears them. */
+.switchboard .cp-closed-row .cp-agent { padding-right: 28px; }
+.switchboard .cp-closed-row [data-role='switchboard.closed-pin'] { position:absolute; top:4px; right:4px; z-index:2; width:22px; min-width:22px; height:22px; padding:3px; opacity:0; pointer-events:none; transition:opacity 120ms ease; }
+.cp-closed-row:hover [data-role='switchboard.closed-pin'], .cp-closed-row:focus-within [data-role='switchboard.closed-pin'] { opacity:1; pointer-events:auto; }
 .switchboard .cp-agent.cp-closed { opacity:0.55; cursor:default; }
 /* Closed chats with a known session reopen on click. */
 .switchboard .cp-agent.cp-closed.cp-resumable { cursor:pointer; }

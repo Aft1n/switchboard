@@ -667,10 +667,185 @@ local close_nodes={}
 collect(slot_tree,function(node) return node.props~=nil and node.props.actions~=nil and node.props.actions.click=="close-agent:901" end,close_nodes)
 eq(#close_nodes,1)
 local agent_rows=class_nodes(slot_tree,"cp-agent-row")
-eq(#agent_rows,1)
+-- One row for the live card and one for the closed record's pin.
+eq(#agent_rows,2)
 eq(#class_nodes(class_nodes(agent_rows[1],"cp-card-agent901")[1],"cp-agent-row"),0)
 eq(#class_nodes(class_nodes(agent_rows[1],"cp-card-agent901")[1],"cp-agent-parent-row"),0)
 print("agent cards carry a sibling close button")
+-- The header pin toggle opens a board; closed cards pin from their own hover control.
+local unpinned_tree=view.render(stub,slot_data,901,nil)
+eq(#class_nodes(unpinned_tree,"cp-pins"),0)
+local pin_toggles=class_nodes(unpinned_tree,"cp-pins-toggle")
+eq(#pin_toggles,1)
+eq(pin_toggles[1].props.actions.click,"toggle-pins")
+eq(#class_nodes(pin_toggles[1],"cp-pin-count"),0)
+eq(pin_toggles[1].props.title,"Pinned agents · none yet")
+-- Header order: count, pin, broom, bell.
+local header_tools=class_nodes(unpinned_tree,"cp-agent-header-tools")[1]
+eq(#header_tools.children,4)
+eq(has_class(header_tools.children[1],"cp-count"),true)
+eq(has_class(header_tools.children[2],"cp-pins-toggle"),true)
+eq(has_class(header_tools.children[3],"cp-broom"),true)
+eq(has_class(header_tools.children[4],"cp-bell"),true)
+-- The board is always in the DOM (hover reveals it) but not persistently open.
+eq(#class_nodes(unpinned_tree,"cp-pin-board"),1)
+eq(has_class(class_nodes(unpinned_tree,"cp-pin-board")[1],"cp-pin-board-open"),false)
+eq(class_nodes(unpinned_tree,"cp-pin-board-empty")[1].props.text,"No pinned agents\nPin an agent from its card.")
+local closed_rows=class_nodes(unpinned_tree,"cp-closed-row")
+eq(#closed_rows,1)
+-- The closed card is the wrapper's first child; the pin sits beside it, right-aligned by CSS.
+eq(#closed_rows[1].children,2)
+eq(closed_rows[1].children[1].props.key,"closed:s9")
+local closed_pin=closed_rows[1].children[2]
+eq(closed_pin.props.role,"switchboard.closed-pin")
+eq(closed_pin.props.actions.click,"pin-closed:s:s9")
+eq(closed_pin.props.key,"pin-closed:s9")
+eq(closed_pin.props.title,"Pin Old")
+local pin_data=table.clone(finished_data)
+pin_data.project_colors={api=2}
+pin_data.agents={{pane=901,name="Parent",state="working",project="api",progress={steps={}},subagents={},pinned=true}}
+pin_data.pinned={
+	{at=11,pane=901,name="Parent",project="api",cwd="/api",session="s1",live=true},
+	{at=12,pane=902,name="Old chat",project="api",cwd="/api/oldwork",session="s2",live=false},
+}
+local closed_board_tree=view.render(stub,pin_data,901,nil)
+local hidden_board=class_nodes(closed_board_tree,"cp-pin-board")[1]
+assert(hidden_board,"the board is present even when closed")
+eq(has_class(hidden_board,"cp-pin-board-open"),false)
+eq(#class_nodes(hidden_board,"cp-pin-card-item"),2)
+local badge_toggle=class_nodes(closed_board_tree,"cp-pins-toggle")[1]
+eq(#class_nodes(badge_toggle,"cp-pin-count"),1)
+eq(class_nodes(badge_toggle,"cp-pin-count")[1].props.text,"2")
+eq(badge_toggle.props.title,"Pinned agents · 2")
+pin_data.pins_open=true
+local pin_tree=view.render(stub,pin_data,901,nil)
+local open_toggle=class_nodes(pin_tree,"cp-pins-toggle")[1]
+assert(has_class(open_toggle,"cp-pins-open"),"the open board marks its toggle")
+-- Anchored under the heading, before the summary: it overlays the list, never sits at its end.
+eq(#class_nodes(class_nodes(pin_tree,"cp-agents")[1],"cp-pin-board"),0)
+local agents_section=class_nodes(pin_tree,"cp-agents-section")[1]
+eq(has_class(agents_section.children[1],"cp-heading"),true)
+eq(has_class(agents_section.children[2],"cp-pin-board"),true)
+eq(has_class(agents_section.children[3],"cp-summary"),true)
+eq(has_class(agents_section.children[4],"cp-agents"),true)
+local board=class_nodes(pin_tree,"cp-pin-board")[1]
+eq(board.props.key,"pin-board")
+assert(has_class(board,"cp-pin-board-open"),"a click opens the board persistently")
+eq(class_nodes(board,"cp-pin-board-head")[1].props.key,"pin-board-head")
+eq(class_nodes(board,"cp-pin-board-title")[1].props.text,"Pinned agents")
+eq(class_nodes(board,"cp-pin-board-count")[1].props.text,"2")
+-- A flex-wrap board that fills the available sidebar width.
+local grid=class_nodes(board,"cp-pin-board-grid")[1]
+eq(grid.props.key,"pin-board-grid")
+eq(#grid.children,2)
+local cards=class_nodes(grid,"cp-pin-card")
+eq(#cards,2)
+eq(#class_nodes(grid,"cp-pin-card-item"),2)
+eq(cards[1].props.actions.click,"pane:901")
+eq(cards[1].props.key,"pin-card:s1")
+assert(has_class(cards[1],"cp-pin-card-focused"),"the focused live agent gets a ring")
+eq(class_nodes(cards[1],"cp-pin-card-name")[1].props.text,"Parent")
+eq(class_nodes(cards[1],"cp-pin-card-state")[1].props.text,"Running")
+eq(#class_nodes(cards[1],"cp-color-2"),1)
+eq(cards[2].props.actions.click,"resume-session:s2")
+eq(cards[2].props.key,"pin-card:s2")
+assert(has_class(cards[2],"cp-pin-card-closed"),"closed pins read as closed")
+eq(class_nodes(cards[2],"cp-pin-card-state")[1].props.text,"Closed")
+eq(#class_nodes(cards[2],"cp-pin-card-folder"),0)
+eq(#class_nodes(cards[2],"cp-pin-card-model"),0)
+assert(string.find(cards[2].props.title,"oldwork",1,true),"the folder stays in the tooltip")
+assert(string.find(cards[1].props.title,"Click to focus",1,true))
+assert(string.find(cards[2].props.title,"Click to reopen",1,true))
+eq(cards[1].props.aria,cards[1].props.title)
+local unpin_roles={}
+collect(pin_tree,function(node) return node.props~=nil and node.props.role=="switchboard.agent-unpin" end,unpin_roles)
+eq(#unpin_roles,2)
+eq(unpin_roles[1].props.actions.click,"unpin-pin:s:s1")
+eq(unpin_roles[2].props.actions.click,"unpin-pin:s:s2")
+eq(unpin_roles[1].props.key,"unpin:s1")
+eq(unpin_roles[2].props.key,"unpin:s2")
+-- Live cards keep the pin toggle beside their close x.
+local card_pin=nil
+collect(pin_tree,function(node) if node.props~=nil and node.props.role=="switchboard.agent-pin" then card_pin=node end end)
+assert(card_pin,"missing the card's pin toggle")
+eq(card_pin.props.actions.click,"pin-agent:901")
+eq(card_pin.props.on,true)
+eq(card_pin.props.title,"Unpin Parent")
+local unpinned_pin=nil
+collect(unpinned_tree,function(node) if node.props~=nil and node.props.role=="switchboard.agent-pin" then unpinned_pin=node end end)
+eq(unpinned_pin.props.on,false)
+eq(unpinned_pin.props.title,"Pin Parent")
+-- Opened with nothing pinned: a message, no grid.
+local empty_board_data=table.clone(finished_data)
+empty_board_data.pins_open=true
+local empty_board_tree=view.render(stub,empty_board_data,901,nil)
+eq(#class_nodes(empty_board_tree,"cp-pin-board"),1)
+assert(has_class(class_nodes(empty_board_tree,"cp-pin-board")[1],"cp-pin-board-open"),"an empty open board is still open")
+eq(#class_nodes(empty_board_tree,"cp-pin-board-grid"),0)
+eq(class_nodes(empty_board_tree,"cp-pin-board-empty")[1].props.text,"No pinned agents\nPin an agent from its card.")
+eq(class_nodes(empty_board_tree,"cp-pin-board-count")[1].props.text,"0")
+print("the header pin toggle opens a two-column pinned board")
+-- The board's open state and contents are in the shell fingerprint.
+local pin_cache=require("./render_cache").new(64)
+local board_data=table.clone(finished_data)
+board_data.pinned=pin_data.pinned
+pin_cache.begin()
+local closed_first=view.render(stub,board_data,901,pin_cache)
+pin_cache.begin()
+local closed_second=view.render(stub,board_data,901,pin_cache)
+eq(#pin_cache.changed(),0)
+assert(closed_second==closed_first,"a closed board rebuilds nothing")
+board_data.pins_open=true
+pin_cache.begin()
+local pin_first=view.render(stub,board_data,901,pin_cache)
+assert(pin_first~=closed_second,"opening the board rebuilds")
+eq(#class_nodes(pin_first,"cp-pin-card-item"),2)
+pin_cache.begin()
+local pin_second=view.render(stub,board_data,901,pin_cache)
+eq(#pin_cache.changed(),0)
+assert(pin_second==pin_first,"unchanged open board reuses the tree")
+board_data.pinned={board_data.pinned[1]}
+pin_cache.begin()
+local pin_after=view.render(stub,board_data,901,pin_cache)
+assert(pin_after~=pin_first,"removing a pin rebuilds the board")
+eq(#class_nodes(pin_after,"cp-pin-card-item"),1)
+eq(class_nodes(pin_after,"cp-pin-board-count")[1].props.text,"1")
+print("board state and pins travel through the shell fingerprint")
+-- Several agents first seen in one update share `at`: pin slot keys must still differ, or Tern rejects the view.
+local same_at_data=table.clone(finished_data)
+same_at_data.project_colors={api=2}
+same_at_data.pins_open=true
+same_at_data.agents={
+	{pane=901,name="Parent",state="working",project="api",progress={steps={}},subagents={},pinned=true},
+	{pane=903,name="Second",state="idle",project="api",progress={steps={}},subagents={},pinned=true},
+}
+same_at_data.pinned={
+	{at=21,pane=901,cwd="/api",name="Parent",project="api",live=true},
+	{at=21,pane=903,cwd="/web",name="Second",project="api",live=true},
+}
+local same_at_tree=view.render(stub,same_at_data,901,nil)
+local same_at_keyed={}
+collect(same_at_tree,function(node) return node.props~=nil and node.props.key~=nil end,same_at_keyed)
+local same_at_seen={}
+for _,node in same_at_keyed do
+	local key=node.props.key
+	-- The shell root and its grid trigger share the `keep-focus` action key by design; pins are the subject here.
+	if key == "keep-focus" then continue end
+	assert(same_at_seen[key]==nil,"duplicate key " .. tostring(key))
+	same_at_seen[key]=true
+end
+local same_at_cards=class_nodes(same_at_tree,"cp-pin-card")
+eq(#same_at_cards,2)
+eq(same_at_cards[1].props.actions.click,"pane:901")
+eq(same_at_cards[2].props.actions.click,"pane:903")
+eq(same_at_cards[1].props.key,"pin-card:21:901:/api")
+eq(same_at_cards[2].props.key,"pin-card:21:903:/web")
+local same_at_unpins={}
+collect(same_at_tree,function(node) return node.props~=nil and node.props.role=="switchboard.agent-unpin" end,same_at_unpins)
+eq(#same_at_unpins,2)
+eq(same_at_unpins[1].props.actions.click,"unpin-pin:a:21:901")
+eq(same_at_unpins[2].props.actions.click,"unpin-pin:a:21:903")
+print("same-at pins keep unique keys and separate actions")
 -- A session listed twice in history must render once: Tern fails the whole view on duplicate child keys.
 local dup_data=table.clone(slot_data)
 dup_data.closed={{session="s9",name="Old",project="api"},{session="s9",name="Old again",project="api"}}

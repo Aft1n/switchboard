@@ -142,5 +142,95 @@ eq(twins[1].session,"S")
 eq(twins[1].live,true)
 eq(twins[1].pane,9)
 eq(#history.closed(twins),0)
+
+-- Pins survive updates and closes, and a pinned closed record leaves the Closed list.
+local pins={}
+history.update(pins,{{pane=40,name="Keep",project="p",cwd="/p"}},10)
+pins[1].pinned=true
+pins[1].pinned_at=12
+eq(history.update(pins,{{pane=40,name="Keep",project="p",cwd="/p"}},20),false)
+eq(pins[1].pinned,true)
+eq(pins[1].pinned_at,12)
+history.update(pins,{},30)
+eq(#history.closed(pins),0)
+eq(#history.pinned(pins),1)
+eq(pins[1].live,false)
+eq(pins[1].pinned_at,12)
+
+-- A pin follows the agent through close and reopen, which merges onto the oldest record.
+local resumed={}
+history.update(resumed,{{pane=11,name="Resume me",project="p",cwd="/p"}},10,{["11"]={session="R",cwd="/p"}})
+resumed[1].pinned=true
+resumed[1].pinned_at=15
+history.update(resumed,{},20)
+eq(#history.pinned(resumed),1)
+history.update(resumed,{{pane=12,name="Resume me",project="p",cwd="/p"}},30,{["12"]={session="R",cwd="/p"}})
+eq(#resumed,1)
+eq(resumed[1].live,true)
+eq(resumed[1].pane,12)
+eq(resumed[1].pinned,true)
+eq(resumed[1].pinned_at,15)
+eq(#history.closed(resumed),0)
+
+-- A duplicate session record merges its pin onto the canonical oldest record.
+local merged_pin={{pane=1,name="Old pin",project="p",cwd="/c",session="s3",at=10},{pane=2,name="New pin",project="p",cwd="/c",session="s3",at=20,pinned=true,pinned_at=25}}
+eq(history.update(merged_pin,{},30),true)
+eq(#merged_pin,1)
+eq(merged_pin[1].pinned,true)
+eq(merged_pin[1].pinned_at,25)
+
+-- Cap trims unpinned records only: a pin older than everything else stays.
+local capped_pin={}
+local first_batch={}
+for i=1,49 do table.insert(first_batch,{pane=i,name="n"..i,project="p",cwd="/c"..i}) end
+history.update(capped_pin,first_batch,40)
+capped_pin[#capped_pin].pinned=true -- pane 1, the oldest
+capped_pin[#capped_pin].pinned_at=45
+local second_batch={}
+for i=50,60 do table.insert(second_batch,{pane=i,name="n"..i,project="p",cwd="/c"..i}) end
+history.update(capped_pin,second_batch,50)
+eq(#capped_pin,50)
+eq(capped_pin[#capped_pin].pane,1)
+eq(capped_pin[#capped_pin].pinned,true)
+local pane2_kept=false
+for _,entry in capped_pin do if entry.pane==2 then pane2_kept=true end end
+eq(pane2_kept,false) -- the oldest unpinned record went instead
+-- All pinned: no trimming happens and no infinite loop.
+local all_pinned={}
+for i=1,51 do table.insert(all_pinned,{pane=i,name="p"..i,project="p",cwd="/q"..i,pinned=true,pinned_at=i,at=i}) end
+eq(history.update(all_pinned,{},60),false)
+eq(#all_pinned,51)
+
+-- Pinned ordering: pinned_at ascending, at as fallback, pane as the tie-break.
+local order={
+	{pane=3,name="c",at=30,pinned=true,pinned_at=30},
+	{pane=1,name="a",at=20,pinned=true,pinned_at=10},
+	{pane=2,name="b",at=40,pinned=true},
+	{pane=4,name="d",at=40,pinned=true,pinned_at=40},
+}
+local sorted=history.pinned(order)
+eq(#sorted,4)
+eq(sorted[1].pane,1)
+eq(sorted[2].pane,3)
+eq(sorted[3].pane,2)
+eq(sorted[4].pane,4)
+
+-- Placeholder-only closed records survive when pinned.
+local pinned_placeholder={}
+history.update(pinned_placeholder,{{pane=30,name="zsh",project="p",cwd="/p"}},10)
+pinned_placeholder[1].pinned=true
+pinned_placeholder[1].pinned_at=11
+history.update(pinned_placeholder,{},20)
+eq(#pinned_placeholder,1)
+eq(pinned_placeholder[1].name,nil)
+eq(#history.pinned(pinned_placeholder),1)
+
+-- Simulated clear-history: keep pinned, drop the rest.
+local clearing={{pane=20,name="Keep",project="p",cwd="/p",at=1,pinned=true,pinned_at=2},{pane=21,name="Drop",project="p",cwd="/p",at=3}}
+local cleared={}
+for _,entry in clearing do if entry.pinned then table.insert(cleared,entry) end end
+eq(#cleared,1)
+eq(cleared[1].pinned,true)
+
 print("agent history checks passed")
 return true

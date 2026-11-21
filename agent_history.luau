@@ -35,6 +35,12 @@ function M.update(list, agents, now, sessions)
 		if not mapping or not mapping.session or (mapping.cwd or "") ~= (agent.cwd or "") then return nil end
 		return mapping.session
 	end
+	-- A pin belongs to the agent, not to one of its records: merging keeps it, with its earliest time.
+	local function take_pin(keep, drop)
+		if not drop.pinned then return end
+		if not keep.pinned then keep.pinned = true; keep.pinned_at = drop.pinned_at
+		elseif (drop.pinned_at or 0) < (keep.pinned_at or 0) then keep.pinned_at = drop.pinned_at end
+	end
 	-- Session is the stable identity; oldest sight of it is canonical and duplicates merge.
 	-- Without one, pane+cwd identifies the agent (a reused pane with a new cwd is new).
 	local function match(agent, session)
@@ -45,7 +51,10 @@ function M.update(list, agents, now, sessions)
 			end
 			if canonical then
 				for index = #list, 1, -1 do
-					if list[index].session == session and list[index] ~= canonical then table.remove(list, index); changed = true end
+					if list[index].session == session and list[index] ~= canonical then
+						take_pin(canonical, list[index])
+						table.remove(list, index); changed = true
+					end
 				end
 				return canonical
 			end
@@ -91,7 +100,7 @@ function M.update(list, agents, now, sessions)
 	end
 	for index = #list, 1, -1 do
 		local entry = list[index]
-		if not entry.live and (entry.name == nil or M.is_placeholder(entry.name, entry.cwd, entry.project)) then
+		if not entry.live and not entry.pinned and (entry.name == nil or M.is_placeholder(entry.name, entry.cwd, entry.project)) then
 			table.remove(list, index)
 			changed = true
 		end
@@ -100,6 +109,7 @@ function M.update(list, agents, now, sessions)
 	local function absorb(keep, drop)
 		if drop.live then keep.live = true; keep.pane = drop.pane end
 		if not keep.name and drop.name then keep.name = drop.name end
+		take_pin(keep, drop)
 	end
 	-- Closed entries never reach `match`, so a session recorded twice (a resume under a new pane) merges here:
 	-- the oldest sight stays, as in `match`.
@@ -144,18 +154,41 @@ function M.update(list, agents, now, sessions)
 			changed = true
 		end
 	end
-	while #list > CAP do table.remove(list); changed = true end
+	-- Over cap, the oldest unpinned records go; pins are never evicted (all pinned leaves
+	-- history over cap, bounded by however many the user pinned).
+	if #list > CAP then
+		local unpinned = {}
+		for index, entry in list do if not entry.pinned then table.insert(unpinned, index) end end
+		for index = #unpinned, 1, -1 do
+			if #list <= CAP then break end
+			table.remove(list, unpinned[index])
+			changed = true
+		end
+	end
 	return changed
 end
 
 -- Recorded agents that are no longer live (by update's `live` flag, not pane reuse).
+-- Pinned entries live in the pinned strip instead of the Closed list.
 function M.closed(list)
 	local out = {}
 	for _,entry in list do
-		if not entry.live and entry.name and not M.is_placeholder(entry.name, entry.cwd, entry.project) then
+		if not entry.live and not entry.pinned and entry.name and not M.is_placeholder(entry.name, entry.cwd, entry.project) then
 			table.insert(out, entry)
 		end
 	end
+	return out
+end
+
+-- Pinned entries, oldest pin first (falling back to first sight), then by pane.
+function M.pinned(list)
+	local out = {}
+	for _,entry in list do if entry.pinned then table.insert(out, entry) end end
+	table.sort(out, function(a,b)
+		local aa, bb = a.pinned_at or a.at or 0, b.pinned_at or b.at or 0
+		if aa ~= bb then return aa < bb end
+		return tostring(a.pane or "") < tostring(b.pane or "")
+	end)
 	return out
 end
 

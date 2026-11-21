@@ -75,7 +75,6 @@ local agent_sessions=require("./agent_sessions")
 local executables=require("./executable")
 local launchers=require("./launchers")
 launchers.history = require("./tree_history")
-local tree_history=require("./tree_history")
 local tern_bin=executables.tern_bin()
 -- Tern's update cache: `state.json` names the installed build; a newer build folder there is downloaded and
 -- waiting for a restart (the native "Update ready" chip reads the same place).
@@ -1048,6 +1047,15 @@ local function render(cx, infos, reveal_target, visible_only)
 	agent_history=tern.kv.get("agent_history") or agent_history
 	if agent_history_mod.update(agent_history,data.agents,tern.now(),pane_sessions) then tern.kv.set("agent_history",agent_history) end
 	data.closed=agent_history_mod.closed(agent_history,data.agents)
+	-- A live agent carries its pin from its history record; dead records stay on the pin board.
+	local live_history={}
+	for _,entry in agent_history do if entry.live then live_history[string.format("%.0f",entry.pane or 0)]=entry end end
+	for _,agent in data.agents do
+		local entry=live_history[string.format("%.0f",agent.pane or 0)]
+		agent.pinned=entry ~= nil and entry.pinned == true
+	end
+	data.pinned=agent_history_mod.pinned(agent_history)
+	data.pins_open = launchers.pins_open == true
 	if #data.agents>0 then
 		local titles={}
 		for _,pane in panes do titles[pane.pane]=pane.title end
@@ -1153,6 +1161,7 @@ local function render(cx, infos, reveal_target, visible_only)
 	for _,project in data.projects do ensure_color(project.name) end
 	for _,agent in data.agents do ensure_color(agent.project) end
 	for _,entry in data.closed do ensure_color(entry.project) end
+	for _,entry in data.pinned do ensure_color(entry.project) end
 	if colors_added then tern.kv.set("project_colors",project_colors_store) end
 	data.project_colors = project_colors_store.colors
 	-- Parked panes per workspace. A parked pane has no tab, so assign it by folder: its cwd against
@@ -1296,6 +1305,12 @@ local function render(cx, infos, reveal_target, visible_only)
 		for name, on in data.workspace_expanded or {} do if on then flags[#flags+1]=name end end
 		for name, on in data.sidebar_settings or {} do flags[#flags+1]=name.."="..tostring(on) end
 		for _,name in data.workspace_view or {} do flags[#flags+1]=name end
+		-- The pin board overlays the list outside the scroller: its open state, count and card
+		-- contents are not tree nodes, so any change needs a full tree rather than a patch.
+		flags[#flags+1]="pins="..tostring(data.pins_open).."="..#(data.pinned or {})
+		for _,entry in data.pinned or {} do
+			flags[#flags+1]=tostring(entry.pane).."="..tostring(entry.pinned_at).."="..tostring(entry.name).."="..tostring(entry.project).."="..tostring(entry.model).."="..tostring(entry.session)
+		end
 		structure=table.concat(keys,"\n").."|"..table.concat(flags,"\n")
 		return structure
 	end
@@ -1471,12 +1486,23 @@ end
 
 -- Everything a render shows that a background pass can change. Cheap to build over
 -- ~60 cards: string joins only, no json. A changed step label repaints on the next poll.
+-- Pin state lives in kv rather than the live infos; keep it inline: window.luau rides
+-- Luau's 200 top-level local limit, and one more top-level helper stops the plugin loading.
 local function screen_key(cx, infos)
+	local pins = {}
+	for _, entry in tern.kv.get("agent_history") or {} do
+		if entry.pinned then
+			table.insert(pins, table.concat({tostring(entry.at), tostring(entry.pane), tostring(entry.pinned_at), tostring(entry.live),
+				tostring(entry.name), tostring(entry.project), tostring(entry.model), tostring(entry.session)}, "\31"))
+		end
+	end
 	local parts = {
 		tostring(cx.session:focused()), tostring(selected_content), hosts_key(cx),
 		tostring(quota_epoch), tostring(quota_state), quotas_key(), tostring(update_ready),
 		fingerprint(sidebar_settings), tostring(workspace_lift),
-		fingerprint(workspace_expanded), fingerprint(subagents_expanded),
+		fingerprint(workspace_expanded), fingerprint(subagents_expanded), table.concat(pins, KEY_SEP),
+		-- The pin board is window state, not render data: toggling it must repaint the sidebars.
+		tostring(launchers.pins_open),
 	}
 	for _, tab in cx.session:tabs() do
 		local layout = cx.session:layout(tab.id)
@@ -2178,6 +2204,14 @@ local function sidebar_action(ev, cx)
 		return focused
 	end
 	if ev.owner ~= PLUGIN_ID then return false end
+	-- The pin board dismisses on any action but its own: navigating away should not leave it floating.
+	local keep_pins = ev.act == "toggle-pins" or string.match(ev.act,"^pin%-") ~= nil or string.match(ev.act,"^unpin%-pin:") ~= nil
+	if not keep_pins then launchers.pins_open = nil end
+	if ev.act == "toggle-pins" then
+		launchers.pins_open = if launchers.pins_open then nil else true
+		refresh(cx)
+		return true
+	end
 	local park_target = string.match(ev.act,"^park%-open:(%d+)$")
 	if park_target then
 		-- A click pins the card open until the badge is clicked again or another workspace action runs.
@@ -2225,6 +2259,87 @@ local function sidebar_action(ev, cx)
 		end
 		local tab=cx.layout:new_tab(launch,{focus=true})
 		if not tab then cx:toast("error","Could not resume " .. (entry.name or resume)); return true end
+		refresh(cx)
+		return true
+	end
+	local pin_pane=string.match(ev.act,"^pin%-agent:(.+)$")
+	if pin_pane then
+		-- Re-read: another window may have written history since the last render.
+		local history=tern.kv.get("agent_history") or {}
+		local found=false
+		for _,entry in history do
+			if entry.live == true and string.format("%.0f",entry.pane or 0) == pin_pane then
+				entry.pinned=not entry.pinned
+				entry.pinned_at=if entry.pinned then tern.now() else nil
+				found=true
+				break
+			end
+		end
+		if found then
+			tern.kv.set("agent_history",history)
+			agent_history=history
+		else
+			cx:toast("info","Agent is no longer live")
+		end
+		refresh(cx)
+		return true
+	end
+	-- Pin a closed agent from its history card. The ref comes from the view: a session id when
+	-- known, else `at` (or its index in the closed list) and pane.
+	local closed_ref = string.match(ev.act,"^pin%-closed:(.+)$")
+	if closed_ref then
+		-- Re-read: another window may have written history since the last render.
+		local history = tern.kv.get("agent_history") or {}
+		local session = string.match(closed_ref,"^s:(.+)$")
+		local at, pane = string.match(closed_ref,"^a:(%d+):(%d+)$")
+		local target, position, same_pane = nil, 0, nil
+		for _, entry in agent_history_mod.closed(history) do
+			position += 1
+			if session then
+				if entry.session == session then target = entry; break end
+			elseif string.format("%.0f",entry.pane or 0) == pane then
+				if string.format("%.0f",entry.at or position) == at then target = entry; break end
+				-- Index fallback: the view may drop duplicate cards, shifting positions; the pane still names the agent.
+				same_pane = same_pane or entry
+			end
+		end
+		target = target or same_pane
+		if target then
+			target.pinned = true
+			target.pinned_at = tern.now()
+			tern.kv.set("agent_history",history)
+			agent_history = history
+		else
+			cx:toast("info","Agent is no longer in history")
+		end
+		refresh(cx)
+		return true
+	end
+	local unpin_ref = string.match(ev.act,"^unpin%-pin:(.+)$")
+	if unpin_ref then
+		local history = tern.kv.get("agent_history") or {}
+		local session = string.match(unpin_ref,"^s:(.+)$")
+		local at, pane = string.match(unpin_ref,"^a:(%d+):(%d+)$")
+		local target
+		-- Same order and refs the view built: sorted pins, session or `at` (or index) and pane.
+		for index, entry in agent_history_mod.pinned(history) do
+			if session then
+				if entry.session == session then target = entry; break end
+			elseif string.format("%.0f",entry.pane or 0) == pane
+				and (string.format("%.0f",entry.at or index) == at or string.format("%.0f",index) == at) then
+				target = entry
+				break
+			end
+		end
+		if target then
+			target.pinned = nil
+			target.pinned_at = nil
+			tern.kv.set("agent_history",history)
+			agent_history = history
+			-- Keep the board open after an unpin: a hover-opened board must not vanish under the
+			-- pointer and let the click land on the agent card's close x behind it.
+			launchers.pins_open = if #agent_history_mod.pinned(history) == 0 then nil else true
+		end
 		refresh(cx)
 		return true
 	end
@@ -2392,8 +2507,11 @@ local function sidebar_action(ev, cx)
 	if ev.act == "update" then cx:action("restart_to_update"); return true end
 	if ev.act == "inbox" then cx:action("inbox"); return true end
 	if ev.act == "clear-history" then
-		-- Forgets closed agents only; live ones are recorded again by the next render.
-		agent_history={}
+		-- Forgets closed agents only, but pins survive: clear the unpinned records and keep the pins.
+		local history=tern.kv.get("agent_history") or agent_history
+		local kept={}
+		for _,entry in history do if entry.pinned then table.insert(kept,entry) end end
+		agent_history=kept
 		tern.kv.set("agent_history",agent_history)
 		refresh(cx)
 		return true
