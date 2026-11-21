@@ -128,6 +128,28 @@ function M.plan(saved, live, exists)
 	return {projects=out, projects_count=#out, tabs_count=total_tabs}
 end
 
+-- Drop the projects a restore would rebuild once the user closed or discarded them on purpose. Match
+-- by folder when both sides have one (a workspace may be reopened elsewhere), else by name.
+function M.forget(saved, targets)
+	if type(saved) ~= "table" then return saved end
+	local function matches(project, target)
+		local path, other = norm(project.path), norm(target.path)
+		if path ~= "" and other ~= "" then return path == other end
+		return type(target.name) == "string" and type(project.name) == "string"
+			and string.lower(project.name) == string.lower(target.name)
+	end
+	local out = {}
+	for _, project in (if type(saved.projects) == "table" then saved.projects else {}) do
+		if type(project) ~= "table" then continue end
+		local gone = false
+		for _, target in targets or {} do
+			if type(target) == "table" and matches(project, target) then gone = true; break end
+		end
+		if not gone then table.insert(out, project) end
+	end
+	return {at=saved.at, projects=out}
+end
+
 -- `plan` with a small cache: the banner asks every render, but folders are only stat'ed every 30 s.
 local plan_cache, plan_sig, plan_at = nil, nil, -math.huge
 function M.plan_cached(saved, live, exists, now)

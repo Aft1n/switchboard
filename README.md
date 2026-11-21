@@ -71,7 +71,7 @@ To remove it: `tern plugin remove switchboard`.
 - Reorder by dragging: hover a workspace, click its grip (the folder icon), then click the row it should go above. Click the grip again to cancel. Your order wins for the workspaces it lists; new ones append.
 - Hover a workspace and click its x to close it. A workspace with open tabs asks first, because closing ends their programs.
 - Workspaces with parked panes show a count badge; hover it for a card of the parked blocks (Tern's kind names and folders), and click one to unpark it into that workspace.
-- Switchboard keeps a tree history: if a Tern reset drops projects, a "Restore saved tree" button in Workspaces (or the palette command) recreates them from the last known folders; agent tabs return as resumable Closed cards.
+- Switchboard keeps a tree history for unexpected project loss: a Tern reset or crash offers "Restore saved tree" in Workspaces (or the palette command), recreating projects from the last known folders with agent tabs as resumable Closed cards. Closing a workspace from Switchboard is intentional, so that project is forgotten and is not offered back. Hover the banner for the project and tab preview; the trash button discards the saved projects.
 - Each project name gets one of 36 colors, shared by its workspace row and its agent cards. Red is never used, since it means urgent or needs input.
 
 ## Agents

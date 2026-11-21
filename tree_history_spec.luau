@@ -43,5 +43,27 @@ local cached=history.plan_cached(saved, live, exists, 1000)
 eq(calls,2) -- the saved projects with paths
 history.plan_cached(saved, live, exists, 1001)
 eq(calls,2)
+-- Forgetting a project the user closed or discarded: by folder, by name when it has no saved path,
+-- unrelated projects kept, duplicates removed once, nil input untouched.
+local forgotten=history.forget(saved, {{name="web",path="/w/web/"}})
+eq(forgotten.at,100)
+eq(#forgotten.projects,1)
+eq(forgotten.projects[1].name,"api")
+eq(#history.forget(saved, {{name="web"},{name="web",path="/w/web"}}).projects,1)
+eq(history.forget(nil, {{name="web"}}),nil)
+eq(#history.forget({at=3,projects={{name="Web",tabs={}}}}, {{name="web",path="/w/web"}}).projects,0)
+eq(#history.forget(saved, {{name="nope"}}).projects,2)
+
+-- A discard sequence: the plan lists both missing projects, forgetting both empties it.
+local exists_all=function() return true end
+local seq={at=7,projects={
+	{name="one",path="/w/one",tabs={{title="a",session="t1"}}},
+	{name="two",path="/w/two",tabs={{title="b",session="t2"}}},
+}}
+eq(history.plan(seq, {}, exists_all).projects_count,2)
+local cleared=history.forget(seq, {{name="one",path="/w/one"},{name="two",path="/w/two"}})
+eq(#cleared.projects,0)
+eq(history.plan(cleared, {}, exists_all).projects_count,0)
+
 print("tree history checks passed")
 return true

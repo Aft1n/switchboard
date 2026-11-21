@@ -638,7 +638,7 @@ function M.render(ui, data, focused, cache)
 	local h, sizes = data.host, section_sizes.read(data.section_sizes)
 	local root_sig = join(
 		data.sidebar_pane, data.sidebar_host, data.workspace_lift, data.quota_state,
-		data.inbox_count, data.update_ready, data.park_open, data.restore_tree, data.restore_tabs,
+		data.inbox_count, data.update_ready, data.park_open, data.restore_tree, data.restore_tabs, data.restore_sig,
 		show_closed, show_steps, show_hosts, show_quotas, #shown, #data.agents, #closed,
 		data.pins_open, #pins, pin_root_sig,
 		h and join(h.id, h.kind, h.state, h.name) or "-", sizes[1], sizes[2],
@@ -657,11 +657,48 @@ function M.render(ui, data, focused, cache)
 			icon("undo","cp-restore-icon"),
 			el("div","cp-restore-copy",{
 				text("cp-restore-label","Restore saved tree"),
-				text("cp-restore-sub", tostring(data.restore_tree) .. " projects" .. (if (data.restore_tabs or 0) > 0 then " · " .. tostring(data.restore_tabs) .. " agent tabs kept" else "")),
+				text("cp-restore-sub", tostring(data.restore_tree) .. (if data.restore_tree == 1 then " project" else " projects") .. (if (data.restore_tabs or 0) > 0 then " · " .. tostring(data.restore_tabs) .. (if data.restore_tabs == 1 then " agent tab kept" else " agent tabs kept") else "")),
 			}),
 		}, nil, "restore-tree")
 		restore.p.title = "Recreate the saved projects; their agent tabs stay resumable in Closed"
-		table.insert(projects_section,1,restore)
+		local discard = ui.button("", {
+			icon="trash", title="Discard saved tree", aria="Discard saved tree",
+			role="switchboard.restore-discard", variant="quiet", size="sm",
+			actions={click="discard-restore"},
+		})
+		discard.p.key = "restore-discard"
+		-- Hover preview: exactly what the plan would rebuild, so restoring is an informed choice.
+		local preview_rows = {el("div","cp-restore-preview-head",{
+			text("cp-restore-preview-title","Will restore"),
+			text("cp-restore-preview-count", tostring(data.restore_tree) .. (if data.restore_tree == 1 then " project" else " projects") .. " · " .. tostring(data.restore_tabs or 0) .. (if data.restore_tabs == 1 then " agent tab" else " agent tabs")),
+		})}
+		for _, saved in data.restore_projects or {} do
+			if type(saved) ~= "table" then continue end
+			local tabs = saved.tabs or {}
+			local project_row = el("div","cp-restore-project",{
+				project_text(saved.name,"cp-restore-name"),
+				text("cp-restore-meta", tostring(#tabs) .. (if #tabs == 1 then " agent tab" else " agent tabs")),
+			})
+			project_row.p.title = saved.path or saved.name or ""
+			table.insert(preview_rows, project_row)
+			if #tabs == 0 then
+				table.insert(preview_rows, text("cp-restore-tab cp-restore-empty","No agent tabs"))
+			else
+				for _, tab in tabs do
+					local row = el("div","cp-restore-tab",{
+						text("cp-restore-tab-title", tab.title or "Agent tab"),
+						text("cp-restore-tab-meta", "agent tab"),
+					})
+					row.p.title = (tab.title or "Agent tab") .. (if tab.cwd then "\n" .. tab.cwd else "")
+					table.insert(preview_rows, row)
+				end
+			end
+		end
+		local preview = el("div","cp-restore-preview",preview_rows)
+		preview.p.key = "restore-preview"
+		local restore_row = el("div","cp-restore-row",{restore, discard, preview})
+		restore_row.p.key = "restore-row"
+		table.insert(projects_section,1,restore_row)
 	end
 	for _, card in park_cards do table.insert(projects_section, card) end
 	local tools = {text("cp-count",tostring(#data.agents))}

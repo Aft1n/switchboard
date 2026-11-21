@@ -652,13 +652,52 @@ print("parked panes show per workspace")
 local restore_data=table.clone(slot_data)
 restore_data.restore_tree=3
 restore_data.restore_tabs=5
+restore_data.restore_sig="api\0/api\1s1\1Fix auth..."
+restore_data.restore_projects={
+	{name="api",path="/api",tabs={{title="Fix auth",session="s1"},{title="Ship it",session="s2"}}},
+	{name="web",path="/web",tabs={{title="Preview",session="s3"},{title="Polish",session="s4"},{title="Tidy",session="s5"}}},
+	{name="empty",path="/empty",tabs={}},
+}
 local restore_tree=view.render(stub,restore_data,901,nil)
-local restore=class_nodes(restore_tree,"cp-restore-tree")[1]
+local restore_rows=class_nodes(restore_tree,"cp-restore-row")
+eq(#restore_rows,1)
+local restore=class_nodes(restore_rows[1],"cp-restore-tree")[1]
 assert(restore,"missing saved-tree restore button")
 eq(restore.props.actions.click,"restore-tree")
 eq(class_nodes(restore,"cp-restore-label")[1].props.text,"Restore saved tree")
 eq(class_nodes(restore,"cp-restore-sub")[1].props.text,"3 projects · 5 agent tabs kept")
-eq(#class_nodes(slot_tree,"cp-restore-tree"),0)
+local discard_nodes={}
+collect(restore_rows[1],function(node) if node.props~=nil and node.props.role=="switchboard.restore-discard" then table.insert(discard_nodes,node) end end,{})
+eq(#discard_nodes,1)
+local discard=discard_nodes[1]
+eq(discard.props.role,"switchboard.restore-discard")
+eq(discard.props.actions.click,"discard-restore")
+eq(discard.p.key,"restore-discard")
+eq(discard.props.title,"Discard saved tree")
+local preview=class_nodes(restore_rows[1],"cp-restore-preview")[1]
+assert(preview,"missing restore preview")
+eq(preview.p.key,"restore-preview")
+eq(class_nodes(preview,"cp-restore-preview-title")[1].props.text,"Will restore")
+local project_rows=class_nodes(preview,"cp-restore-project")
+eq(#project_rows,3)
+eq(class_nodes(project_rows[1],"cp-restore-name")[1].props.text,"api")
+eq(project_rows[1].props.title,"/api")
+eq(class_nodes(project_rows[1],"cp-restore-meta")[1].props.text,"2 agent tabs")
+eq(class_nodes(project_rows[2],"cp-restore-name")[1].props.text,"web")
+eq(project_rows[2].props.title,"/web")
+eq(class_nodes(project_rows[3],"cp-restore-name")[1].props.text,"empty")
+local tab_rows=class_nodes(preview,"cp-restore-tab")
+-- Two agent tabs for api, three for web, one muted no-tabs row for empty.
+eq(#tab_rows,6)
+eq(class_nodes(tab_rows[1],"cp-restore-tab-title")[1].props.text,"Fix auth")
+eq(class_nodes(tab_rows[3],"cp-restore-tab-title")[1].props.text,"Preview")
+assert(has_class(tab_rows[6],"cp-restore-empty"),"the empty project shows a muted no-tabs row")
+eq(tab_rows[6].props.text,"No agent tabs")
+-- The discard control is a sibling of the restore button, never nested inside it.
+local nested_discard=0
+collect(restore,function(node) if node.props~=nil and node.props.role=="switchboard.restore-discard" then nested_discard+=1 end end,{})
+eq(nested_discard,0)
+eq(#class_nodes(slot_tree,"cp-restore-row"),0)
 print("saved tree restore button follows the history")
 
 

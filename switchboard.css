@@ -298,13 +298,31 @@ html.lay-tiles .tn-pane:has(.switchboard) { --cp-corner:var(--tn-tile-r); }
 .cp-project-row:hover .cp-workspace-grip, .cp-project-row:focus-within .cp-workspace-grip, .cp-project-row.cp-picked .cp-workspace-grip { opacity:.55; pointer-events:auto; }
 .switchboard .cp-workspace-grip:hover { opacity:1; background:color-mix(in srgb, var(--ink) 8%, transparent); color:var(--t1); }
 .switchboard .cp-projects-section { position: relative; }
-.switchboard .cp-restore-tree { display: flex; align-items: center; gap: 8px; margin: 2px 4px 6px; padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--t2); text-align: left; }
+.switchboard .cp-restore-row { position: relative; display: flex; align-items: center; gap: 2px; margin: 2px 4px 6px; }
+.switchboard .cp-restore-tree { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; margin: 0; padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--t2); text-align: left; }
 .switchboard .cp-restore-tree:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--t1); }
 .switchboard .cp-restore-icon { display: flex; flex: 0 0 16px; width: 16px; height: 16px; align-items: center; justify-content: center; color: var(--accent); }
 .switchboard .cp-restore-icon .sf-icon { width: 14px; height: 14px; }
 .switchboard .cp-restore-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .switchboard .cp-restore-label { color: var(--t1); font-size: 11px; font-weight: 600; }
 .switchboard .cp-restore-sub { overflow: hidden; color: var(--t4); font-size: 10px; white-space: nowrap; text-overflow: ellipsis; }
+/* Discard stays visible: it is the only way to make the banner stop offering a plan. */
+.switchboard .cp-restore-row [data-role='switchboard.restore-discard'] { flex: 0 0 auto; width: 24px; min-width: 24px; height: 26px; padding: 4px; color: var(--t4); }
+.switchboard .cp-restore-row [data-role='switchboard.restore-discard']:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); color: var(--t1); }
+/* Absolute under the row; the ::before bridges the 3px gap so the pointer keeps the row hovered. */
+.switchboard .cp-restore-preview { display: none; position: absolute; top: calc(100% + 3px); left: 0; right: 0; z-index: 2100; max-height: 220px; overflow-y: auto; flex-direction: column; gap: 3px; padding: 8px; border: 1px solid var(--l2); border-radius: var(--r-panel, 9px); background: var(--card, var(--raise, Canvas)); box-shadow: 0 10px 30px #0003; }
+.switchboard .cp-restore-preview::before { content: ""; position: absolute; left: 0; right: 0; top: -4px; height: 4px; }
+.switchboard .cp-restore-row:hover .cp-restore-preview, .switchboard .cp-restore-row:focus-within .cp-restore-preview { display: flex; }
+.switchboard .cp-restore-preview-head { display: flex; justify-content: space-between; gap: 8px; padding: 1px 5px 4px; color: var(--t4); font-size: 9px; font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase; }
+.switchboard .cp-restore-preview-title { color: var(--t3); }
+.switchboard .cp-restore-preview-count { color: var(--t4); font-weight: 500; letter-spacing: 0; text-transform: none; }
+.switchboard .cp-restore-project { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 3px 5px 1px; }
+.switchboard .cp-restore-name { flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 11px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.switchboard .cp-restore-meta { flex: 0 0 auto; color: var(--t4); font-size: 9px; }
+.switchboard .cp-restore-tab { display: flex; align-items: baseline; gap: 6px; min-width: 0; padding: 2px 5px 2px 20px; color: var(--t3); }
+.switchboard .cp-restore-tab-title { flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 10px; white-space: nowrap; text-overflow: ellipsis; }
+.switchboard .cp-restore-tab-meta { flex: 0 0 auto; color: var(--t4); font-size: 9px; }
+.switchboard .cp-restore-empty { color: var(--t4); font-size: 10px; font-style: italic; }
 .switchboard .cp-workspace-park { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 3px; height: 22px; min-width: 22px; padding: 0 4px; border: 0; border-radius: 6px; background: transparent; color: var(--t3); z-index: 1; }
 .switchboard .cp-project-row.cp-has-park > .cp-project { padding-right: 34px; }
 .switchboard .cp-project-row.cp-has-park [data-role='switchboard.workspace-close'] { right: 34px; }

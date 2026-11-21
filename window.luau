@@ -1250,6 +1250,17 @@ local function render(cx, infos, reveal_target, visible_only)
 	launchers.history_plan = restore_plan
 	data.restore_tree = restore_plan.projects_count
 	data.restore_tabs = restore_plan.tabs_count
+	-- What the banner's hover preview rebuilds, and a compact key of it: the sidebar repaints when
+	-- the plan's projects or tabs change, not only when its count does.
+	data.restore_projects = restore_plan.projects
+	local restore_parts = {}
+	for _, project in restore_plan.projects do
+		local parts = {tostring(project.name), tostring(project.path)}
+		for _, tab in project.tabs or {} do parts[#parts+1] = tostring(tab.title) .. "\1" .. tostring(tab.session) end
+		restore_parts[#restore_parts+1] = table.concat(parts, "\0")
+	end
+	data.restore_sig = table.concat(restore_parts, "\2")
+	launchers.restore_sig = data.restore_sig
 	local selected = cx.session:focused()
 	-- True focus wins for the highlight. A background prewarm render passes reveal_target
 	-- and must keep its deliberately selected content; everywhere else the visible content
@@ -1311,6 +1322,9 @@ local function render(cx, infos, reveal_target, visible_only)
 		for _,entry in data.pinned or {} do
 			flags[#flags+1]=tostring(entry.pane).."="..tostring(entry.pinned_at).."="..tostring(entry.name).."="..tostring(entry.project).."="..tostring(entry.model).."="..tostring(entry.session)
 		end
+		-- The restore banner and its hover preview live outside the tree nodes: their plan needs a full
+		-- tree so the banner appears, changes and vanishes instead of waiting on a patch.
+		flags[#flags+1]="restore="..tostring(data.restore_tree).."="..tostring(data.restore_sig)
 		structure=table.concat(keys,"\n").."|"..table.concat(flags,"\n")
 		return structure
 	end
@@ -1503,6 +1517,8 @@ local function screen_key(cx, infos)
 		fingerprint(workspace_expanded), fingerprint(subagents_expanded), table.concat(pins, KEY_SEP),
 		-- The pin board is window state, not render data: toggling it must repaint the sidebars.
 		tostring(launchers.pins_open),
+		-- The restore banner and its preview: a changed plan (or none) repaints on the next pass.
+		tostring(launchers.restore_sig), tostring(launchers.history_plan and launchers.history_plan.projects_count),
 	}
 	for _, tab in cx.session:tabs() do
 		local layout = cx.session:layout(tab.id)
@@ -2417,6 +2433,15 @@ local function sidebar_action(ev, cx)
 				local function close(later)
 					if not use_host(later,host_of(later,"sessions",close_workspace)) then return end
 					later.sessions:close(close_workspace)
+					-- A workspace the user closed on purpose must not come back as a restore offer; a crash
+					-- or reset never reaches here, so the banner still appears for those.
+					local saved = tern.kv.get("tree_history")
+					if type(saved) == "table" then
+						tern.kv.set("tree_history", launchers.history.forget(saved,
+							{{name=session.name, path=project_paths[string.format("%.0f",close_workspace)]}}))
+					end
+					launchers.history.invalidate_plan()
+					launchers.history_plan = nil
 					workspace_expanded[tostring(close_workspace)]=nil
 					tern.kv.set("workspace_expanded",workspace_expanded)
 					if selected_workspace==close_workspace then selected_workspace=nil end
@@ -2504,6 +2529,19 @@ local function sidebar_action(ev, cx)
 		return true
 	end
 	if ev.act == "restore-tree" then launchers.restore_tree(cx); return true end
+	if ev.act == "discard-restore" then
+		-- Forgets the projects this banner offers, so closing it means it stays closed.
+		local plan = launchers.history_plan
+		local saved = tern.kv.get("tree_history")
+		if type(saved) == "table" then
+			tern.kv.set("tree_history", launchers.history.forget(saved, plan and plan.projects))
+		end
+		launchers.history.invalidate_plan()
+		launchers.history_plan = nil
+		refresh(cx)
+		cx:toast("success","Saved tree discarded")
+		return true
+	end
 	if ev.act == "update" then cx:action("restart_to_update"); return true end
 	if ev.act == "inbox" then cx:action("inbox"); return true end
 	if ev.act == "clear-history" then

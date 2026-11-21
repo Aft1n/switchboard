@@ -1,7 +1,7 @@
 schema = 1
 id = "switchboard"
 name = "Switchboard"
-version = "0.1.9"
+version = "0.1.10"
 description = "Workspace navigation, live agent steps, and provider quota rings."
 icon = "terminal"
 host = "sidebar-host.luau"
