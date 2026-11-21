@@ -404,12 +404,12 @@ html.lay-tiles .tn-pane:has(.switchboard) { --cp-corner:var(--tn-tile-r); }
 /* Per-project color slots: the same project reads the same color on the
    workspace row and on every live or closed agent card. Slots 7..36 come from
    the generated `project-colors` sheet; these six are the pre-sheet fallback. */
-.cp-color-1 { color: color-mix(in srgb, var(--ansi2, var(--accent)) 40%, var(--t2)) !important; }
-.cp-color-2 { color: color-mix(in srgb, var(--ansi3, var(--accent)) 40%, var(--t2)) !important; }
-.cp-color-3 { color: color-mix(in srgb, var(--ansi4, var(--accent)) 40%, var(--t2)) !important; }
-.cp-color-4 { color: color-mix(in srgb, var(--ansi5, var(--accent)) 40%, var(--t2)) !important; }
-.cp-color-5 { color: color-mix(in srgb, var(--ansi6, var(--accent)) 40%, var(--t2)) !important; }
-.cp-color-6 { color: color-mix(in srgb, var(--ansi10, var(--accent)) 40%, var(--t2)) !important; }
+.cp-color-1 { color: color-mix(in srgb, var(--ink-pen, var(--accent)) 50%, var(--t2)) !important; }
+.cp-color-2 { color: color-mix(in srgb, color-mix(in srgb, var(--ansi3, var(--accent)) 32%, var(--ansi2, var(--accent))) 50%, var(--t2)) !important; }
+.cp-color-3 { color: color-mix(in srgb, color-mix(in srgb, var(--ansi6, var(--accent)) 68%, var(--ansi4, var(--accent))) 50%, var(--t2)) !important; }
+.cp-color-4 { color: color-mix(in srgb, var(--ansi5, var(--accent)) 50%, var(--t2)) !important; }
+.cp-color-5 { color: color-mix(in srgb, color-mix(in srgb, var(--ink-pen, var(--accent)) 32%, var(--ansi3, var(--accent))) 50%, var(--t2)) !important; }
+.cp-color-6 { color: color-mix(in srgb, color-mix(in srgb, var(--ansi2, var(--accent)) 68%, var(--ansi6, var(--accent))) 50%, var(--t2)) !important; }
 .cp-agent-project { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .cp-agent-model { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--t4); font-size:10px; }
 

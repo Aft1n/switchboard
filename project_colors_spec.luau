@@ -52,7 +52,7 @@ eq(pc.ensure({colors={a=1,b=2}},"fallback"),3)
 local wrap={next=36,colors={a=1,b=2}}
 eq(pc.ensure(wrap,"w"),36)
 
--- Stylesheet: 36 distinct slots, 17 red-free bases, 19 cool-led mixes.
+-- Stylesheet: 36 slots, 18 token hue recipes x 2 tones, theme tokens only, no red.
 local sheet=pc.css()
 local selectors,duplicates={},{}
 for slot in string.gmatch(sheet,"%.cp%-color%-(%d+) {") do
@@ -62,45 +62,42 @@ for slot in string.gmatch(sheet,"%.cp%-color%-(%d+) {") do
 end
 eq(#selectors,36)
 for slot=1,36 do eq(duplicates[tostring(slot)],true) end
-eq(string.find(sheet,"--c",1,true),nil) -- no invented --c1..6 variables
 local lines={}
 for line in string.gmatch(sheet,"[^\n]+") do table.insert(lines,line) end
 eq(#lines,36)
-local bases,pairs=0,0
-for _,line in ipairs(lines) do
-	local count=0
-	for _ in string.gmatch(line,"color%-mix%(") do count=count+1 end
-	if count==1 then bases=bases+1 elseif count==2 then pairs=pairs+1 end
+local FAMILIES={"--ink-pen","--ansi3","--ansi2","--ansi6","--ansi4","--ansi5"}
+local family_index={}
+for i,token in ipairs(FAMILIES) do family_index[token]=i end
+for _,red in ipairs({"--ansi1","--ansi9","--bad"}) do
+	eq(string.find(sheet,red,1,true),nil) -- red reserved for urgent/needs-input
 end
-eq(bases,17) -- direct token smoothed 40% with --t2
-eq(pairs,19) -- pair color smoothed 40% with --t2
-local direct={}
-for i=1,17 do direct[i]=string.match(lines[i],"var%((%-%-[%w%-]+),") end
-local expected={"--ansi2","--ansi3","--ansi4","--ansi5","--ansi6","--ansi10","--ansi11","--ansi12","--ansi13","--ansi14","--a1","--a2","--accent-ink","--ok","--warn","--live","--ink-pen"}
-for i,token in ipairs(expected) do eq(direct[i],token) end
-eq(direct[1],"--ansi2"); eq(direct[6],"--ansi10"); eq(direct[12],"--a2"); eq(direct[17],"--ink-pen")
-local present={}
-for i=1,17 do present[direct[i]]=true end
-eq(present["--ansi1"],nil) -- red reserved for urgent/needs-input
-eq(present["--ansi9"],nil)
-eq(present["--bad"],nil)
-for _,token in ipairs({"--ansi1","--ansi9","--bad"}) do
-	eq(string.find(sheet,"var("..token..",",1,true),nil)
+local counts={}
+for _,token in ipairs(FAMILIES) do counts[token]=0 end
+local recipes={}
+for slot,line in ipairs(lines) do
+	eq(string.find(line,if slot<=18 then "50%, var(--t2)" else "60%, var(--ink)",1,true)~=nil,true)
+	local tokens={}
+	for token in string.gmatch(line,"var%((%-%-[%w%-]+)") do
+		if token~="--t2" and token~="--ink" and token~="--accent" then table.insert(tokens,token) end
+	end
+	eq(#tokens>=1,true)
+	eq(family_index[tokens[1]]~=nil,true)
+	counts[tokens[1]]+=1
+	if #tokens==2 then
+		-- Mixes only go into the next family, never back onto a repeated hue.
+		eq(family_index[tokens[2]],family_index[tokens[1]]%#FAMILIES+1)
+	end
+	local tone=if slot<=18 then 1 else 2
+	local shares={}
+	for share in string.gmatch(line,"%d+%%") do shares[#shares+1]=share end
+	local key=tone..":"..table.concat(tokens,"|").."@"..table.concat(shares,",")
+	eq(recipes[key],nil)
+	recipes[key]=true
 end
-eq(lines[1], ".cp-color-1 { color: color-mix(in srgb, var(--ansi2, var(--accent)) 40%, var(--t2)) !important; }")
-eq(lines[6], ".cp-color-6 { color: color-mix(in srgb, var(--ansi10, var(--accent)) 40%, var(--t2)) !important; }")
-eq(lines[18], ".cp-color-18 { color: color-mix(in srgb, color-mix(in srgb, var(--ansi4, var(--accent)) 65%, var(--ansi10, var(--accent))) 40%, var(--t2)) !important; }")
-eq(lines[36], ".cp-color-36 { color: color-mix(in srgb, color-mix(in srgb, var(--a1, var(--accent)) 65%, var(--a2, var(--accent))) 40%, var(--t2)) !important; }")
-local cool={["--ansi4"]=true,["--ansi6"]=true,["--ansi2"]=true,["--a2"]=true,["--a1"]=true,["--accent-ink"]=true,["--ok"]=true}
-local pair_seen={}
-for slot=18,36 do
-	local first=string.match(lines[slot],"var%((%-%-[%w%-]+),")
-	local second=string.match(lines[slot],"65%%, var%((%-%-[%w%-]+),")
-	eq(cool[first],true)
-	assert(second, "missing mix second operand")
-	eq(pair_seen[first .. "|" .. second],nil)
-	pair_seen[first .. "|" .. second]=true
-end
+for _,token in ipairs(FAMILIES) do eq(counts[token],6) end
+eq(lines[1], ".cp-color-1 { color: color-mix(in srgb, var(--ink-pen, var(--accent)) 50%, var(--t2)) !important; }")
+eq(lines[19], ".cp-color-19 { color: color-mix(in srgb, var(--ink-pen, var(--accent)) 60%, var(--ink)) !important; }")
+eq(lines[36], ".cp-color-36 { color: color-mix(in srgb, color-mix(in srgb, var(--ansi4, var(--accent)) 68%, var(--ansi5, var(--accent))) 60%, var(--ink)) !important; }")
 
 eq(pc.class(4),"cp-color-4")
 eq(pc.class(36),"cp-color-36")

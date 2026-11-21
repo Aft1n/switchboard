@@ -2086,6 +2086,8 @@ launchers.restore_tree = function(cx)
 	step(cx)
 end
 
+-- Forward declaration: new-chat-tab's run closure refers to it before the definition line is reached.
+local workspace_for_path
 tern.command({id="new-chat-tab", title="Switchboard: new chat in a new tab", run=function(cx)
 	local focused=cx.session:focused()
 	local path
@@ -2159,7 +2161,7 @@ end
 
 -- The workspace whose panes or saved project folder best match `path`: an exact folder wins, then a parent or
 -- child folder. Nil when nothing matches (the caller keeps the focused workspace).
-local function workspace_for_path(cx, path)
+function workspace_for_path(cx, path)
 	if type(path) ~= "string" or path == "" then return nil end
 	local function norm(value) return string.lower((string.gsub(value, "/+$", ""))) end
 	local wanted = norm(path)

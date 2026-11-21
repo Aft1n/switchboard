@@ -2,14 +2,12 @@
 -- projects distinct; workspace rows and agent cards share one slot per project name.
 local M = {}
 M.TOTAL = 36
--- Real Tern tokens only. No red: red is reserved for urgent/needs-input states.
-local TOKENS = {
-	"--ansi2", "--ansi3", "--ansi4", "--ansi5", "--ansi6",
-	"--ansi10", "--ansi11", "--ansi12", "--ansi13", "--ansi14",
-	"--a1", "--a2", "--accent-ink", "--ok", "--warn", "--live", "--ink-pen",
-}
--- Mixes start from cool/green tokens so no slot drifts toward red.
-local COOL = {"--ansi4", "--ansi6", "--ansi2", "--a2", "--a1", "--accent-ink", "--ok"}
+-- Theme tokens, one hue family each: orange, amber, green, cyan, blue, purple.
+-- The previous mix collapsed because normal/bright variants and ok/warn/live aliases
+-- repeated the same hue, then 60% --t2 drained the chroma. Each family now contributes
+-- a pure hue and two mixes into its neighbour, and only two tones, so every slot keeps
+-- a real theme hue. Red stays out: red means urgent or needs input.
+local FAMILIES = {"--ink-pen", "--ansi3", "--ansi2", "--ansi6", "--ansi4", "--ansi5"}
 
 local function valid(value)
 	return type(value) == "number" and value % 1 == 0 and value >= 1 and value <= M.TOTAL
@@ -84,19 +82,25 @@ function M.class(color)
 	return "cp-color-" .. tostring(color)
 end
 
--- Seventeen direct tokens plus nineteen ordered cool-led mixes. The window applies
--- this once as a dynamic sheet; switchboard.css only carries the 1..6 fallback.
+-- 18 token recipes (6 pure families plus a 68/32 and 32/68 mix into the next family),
+-- each in two tones: 50% over --t2 (muted, AA contrast) and 60% over --ink. Slots walk
+-- five recipes at a time, so consecutive projects never share a hue family.
+local function base(index)
+	local family = math.floor(index / 3) % #FAMILIES + 1
+	local token = FAMILIES[family]
+	if index % 3 == 0 then return string.format("var(%s, var(--accent))", token) end
+	local next_token = FAMILIES[family % #FAMILIES + 1]
+	local share = if index % 3 == 1 then 68 else 32
+	return string.format("color-mix(in srgb, var(%s, var(--accent)) %d%%, var(%s, var(--accent)))", token, share, next_token)
+end
+
 function M.css()
 	local rules = {}
-	for slot, token in ipairs(TOKENS) do
-		table.insert(rules, string.format(".cp-color-%d { color: color-mix(in srgb, var(%s, var(--accent)) 40%%, var(--t2)) !important; }", slot, token))
-	end
-	for i = 1, 19 do
-		local first = COOL[(i - 1) % #COOL + 1]
-		local index = (i * 5) % #TOKENS
-		local second = TOKENS[index + 1]
-		if second == first then index = (index + 1) % #TOKENS; second = TOKENS[index + 1] end
-		table.insert(rules, string.format(".cp-color-%d { color: color-mix(in srgb, color-mix(in srgb, var(%s, var(--accent)) 65%%, var(%s, var(--accent))) 40%%, var(--t2)) !important; }", #TOKENS + i, first, second))
+	for slot = 1, M.TOTAL do
+		local tone = math.floor((slot - 1) / 18)
+		local recipe = (((slot - 1) % 18) * 5) % 18
+		local tail = if tone == 0 then "50%, var(--t2)" else "60%, var(--ink)"
+		table.insert(rules, string.format(".cp-color-%d { color: color-mix(in srgb, %s %s) !important; }", slot, base(recipe), tail))
 	end
 	return table.concat(rules, "\n")
 end

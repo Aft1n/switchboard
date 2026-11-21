@@ -178,7 +178,7 @@ function M.render(ui, data, focused, cache)
 		)
 		local project_row = cached(cache, "ws:" .. workspace_key, signature, function()
 			local project = el("button", "cp-project" .. (if (p.busy_tabs or 0)>0 then " cp-workspace-busy" else "") .. (if p.current then " cp-current" else "") .. (if expanded then " cp-open" else ""), {
-				icon("folder", "cp-project-icon"),
+				icon("folder", "cp-project-icon" .. (if color_class then " " .. color_class else "")),
 				project_text(p.name, "cp-label cp-project-name"), text("cp-count", (if (p.busy_tabs or 0)>0 then tostring(p.busy_tabs) .. " active · " else "") .. tostring(#p.tabs) .. (if #p.tabs == 1 then " tab" else " tabs")),
 				icon("chev-r","cp-workspace-chevron"),
 			}, nil, row_action)

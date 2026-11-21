@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.11
+
+- `alt+shift+n` no longer fails with "attempt to call a nil value": the new-chat-tab command forward-declares the workspace lookup it calls before the definition line is reached.
+- Project colors now come from Tern's own ANSI tokens again: six hue families contribute pure and neighbouring mixes in 36 slots, two muted tones keep the sidebar quiet, red stays reserved, and consecutive projects never share a hue family. The workspace folder cover carries the same color class as the workspace name, agent cards and agent tabs, so one project reads as one color everywhere.
+
 ## 0.1.10
 
 - "Restore saved tree" only appears for unexpected project loss now: closing a workspace from Switchboard is intentional and forgets that saved project, so one deliberate close no longer looks like a crash. Hover the banner for a preview of the projects and agent tabs it would rebuild, or discard the saved projects with the trash button.
