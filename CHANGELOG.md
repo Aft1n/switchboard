@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.9
 
 - Pinned agents moved behind a pin button in the Agents header with a count badge. It opens a board of detailed pinned cards — agent name, project, state, latest step and todo; model and folder stay in the hover tooltip. Cards fill the sidebar width and wrap into columns only when names fit; each card's top-right pin-with-slash unpins without closing the tab. Live cards focus their pane, and closed cards with an omp session reopen. Closed agents can now be pinned from their Closed cards. The old strip above the list is gone; pins survive tab closes and reloads, and the broom leaves them alone.
 
