@@ -136,6 +136,7 @@ html.lay-tiles .tn-pane:has(.switchboard) { --cp-corner:var(--tn-tile-r); }
   .switchboard *, .switchboard *::after { animation: none !important; transition: none !important; }
 }
 .cp-activity-label { color: var(--t4); font-size: 10px; margin-top: 6px; }
+.switchboard .cp-activity-working { color: var(--t3); animation: cp-breathe 1.6s ease-in-out infinite; }
 .cp-step { display: flex; gap: 7px; align-items: center; min-width: 0; color: var(--t3); }
 .cp-step-icon { display: flex; flex-shrink: 0; opacity: 0.7; }
 .cp-step-icon .sf-icon { width: 12px; height: 16px; }

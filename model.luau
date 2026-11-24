@@ -96,8 +96,9 @@ function M.build(sessions, tabs, panes, agents, owned, activity, layouts, focuse
 				subagents=sample and sample.subagents or {},
 				progress=sample and sample.snapshot, progress_completed_at=sample and sample.progress_completed_at, unavailable=sample and sample.unavailable,
 				activity_status=if a.synthetic then "terminal" elseif not sample or sample.read_at==-math.huge then "loading"
-					elseif sample.unavailable then "unavailable" elseif sample.empty_transcript then "unreported"
-					elseif sample.snapshot and #sample.snapshot.steps==0 then "no_tools" else nil,
+					elseif sample.unavailable then "unavailable" elseif sample.empty_transcript and a.state ~= "working" then "unreported"
+					elseif sample.snapshot and #sample.snapshot.steps==0 then (if a.state=="working" then "working" else "no_tools")
+					else nil,
 				updated_at=sample and sample.updated_at or 0, finished_at=sample and sample.finished_at or 0,
 				finished=a.state=="idle" and ((sample and (sample.finished_at or 0)>0) or (sample and not sample.empty_transcript and sample.snapshot and (#sample.snapshot.steps>0 or sample.snapshot.response~=nil or sample.snapshot.todo~=nil))) or false,
 				recent_order=sample and sample.recent_order or 0, observed_index=#result.agents+1,

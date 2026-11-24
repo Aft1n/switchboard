@@ -26,7 +26,7 @@ local PARK_ICONS = {
 local LABELS = {working="Running", waiting_input="Needs input", idle="Idle", done="New result"}
 local PROVIDER_NAMES = {["openai-codex"]="Codex", anthropic="Claude", ["google-antigravity"]="Gemini", commandcode="Command"}
 local PROVIDER_LOGOS = {anthropic="provider-anthropic", ["openai-codex"]="provider-openai", ["google-antigravity"]="provider-google"}
-local ACTIVITY_LABELS = {loading="Loading activity…", unavailable="Activity unavailable", unreported="Activity not reported", no_tools="No tool steps yet", terminal="Terminal agent"}
+local ACTIVITY_LABELS = {loading="Loading activity…", unavailable="Activity unavailable", unreported="Activity not reported", no_tools="No tool steps yet", working="Working…", terminal="Terminal agent"}
 local SUBAGENT_STATES = {working=true, waiting_input=true, idle=true, done=true, failed=true, closed=true}
 local encoded_cache, encoded_count = {}, 0
 -- Unreserved URI characters pass through; the rest become %XX. Bounded memo: the quota SVG repeats the same characters every tick.
@@ -321,7 +321,7 @@ function M.render(ui, data, focused, cache)
 			step_node = el("div","cp-step cp-step-" .. step.status,{icon(mark,"cp-step-icon"),text("cp-step-label",step.label)})
 		elseif show_steps and (a.activity_status or a.unavailable) then
 			local label = ACTIVITY_LABELS[a.activity_status] or "Activity unavailable"
-			step_node = text("cp-activity-label",label)
+			step_node = text("cp-activity-label" .. (if a.activity_status=="working" then " cp-activity-working" else ""),label)
 		end
 		if step_node then table.insert(children, step_node) end
 		if todo then
@@ -521,7 +521,7 @@ function M.render(ui, data, focused, cache)
 					local mark = TOOL_ICONS[step.tool or ""] or (if step.status == "failed" then "error" elseif step.status == "running" then "timer" elseif step.status == "done" then "check" else "minus")
 					table.insert(content, el("div", "cp-step cp-step-" .. step.status, {icon(mark, "cp-step-icon"), text("cp-step-label", step.label)}))
 				elseif live and (live.activity_status or live.unavailable) then
-					table.insert(content, text("cp-activity-label", ACTIVITY_LABELS[live.activity_status] or "Activity unavailable"))
+					table.insert(content, text("cp-activity-label" .. (if live.activity_status=="working" then " cp-activity-working" else ""), ACTIVITY_LABELS[live.activity_status] or "Activity unavailable"))
 				end
 				if todo then
 					local count = tostring(todo.done) .. " / " .. tostring(todo.total)

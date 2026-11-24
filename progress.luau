@@ -47,7 +47,7 @@ local function append_step(steps, step)
 	end
 end
 
-function M.scan(messages, previous)
+function M.scan(messages, previous, state)
 	local todo, prior_steps
 	local response=if type(previous)=="table" then previous.response else nil
 	if type(previous) == "table" then
@@ -77,7 +77,11 @@ function M.scan(messages, previous)
 					-- finished list is dropped when the next prompt starts new work.
 					if todo and todo.done >= todo.total then todo = nil end
 					if #steps > 0 then recent = steps end
-					steps, reset, response = {}, true, nil
+					-- A working agent also receives mid-run steers; those must not blank the
+					-- live steps. A prompt after idle still starts a fresh tool history.
+					if state ~= "working" then
+						steps, reset, response = {}, true, nil
+					end
 				end
 				if message.role == "assistant" and type(message.text)=="string" and message.text~="" then
 					response=message.text
@@ -140,7 +144,7 @@ function M.from_view(root)
  return todo
 end
 function M.sample(messages,previous,state,native_view)
- local result=M.scan(messages,previous)
+ local result=M.scan(messages,previous,state)
  if state=="idle" and #result.steps==0 and result.recent_steps and #result.recent_steps>0 then result.steps=result.recent_steps end
  result.recent_steps=nil
  local native=M.from_view(native_view)

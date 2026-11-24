@@ -187,10 +187,6 @@ local function agent_infos(cx)
 		-- session's "working" state. The pane's own busy flag is current.
 		local pane=cx.session:pane(info.pane)
 		if raw=="working" and pane and pane.busy==false then raw="idle" end
-		local prior=activity[info.pane]
-		if raw=="working" and prior and prior.empty_transcript
-			and prior.snapshot and #(prior.snapshot.steps or {})==0
-			and prior.snapshot.response==nil and prior.snapshot.todo==nil then raw="idle" end
 		if raw=="idle" or raw=="exited" or raw=="waiting_input" then completed_signals[info.pane]=nil end
 		local reported=completed_signals[info.pane] or raw
 		if (raw=="working" or completed_signals[info.pane]) and info.pane==cx.session:focused() then
@@ -212,12 +208,10 @@ local function sample(cx, infos, read)
 	local now = tern.now()
 	local wall = os.time()*1000
 	local seen = {}
-	local by_pane = {}
 	local focused = cx.session:focused()
 	local changed=false
 	local content=false
 	local fresh_count=0
-	for _, info in infos do by_pane[info.pane] = info end
 	-- Another window may have ordered panes since this one last read.
 	recency=tern.kv.get("agent_recency") or recency
 	for _, info in infos do
@@ -302,6 +296,7 @@ local function sample(cx, infos, read)
 			end
 			record.subagents=children
 			record.empty_transcript=type(messages)~="table" or #messages==0
+			-- An empty transcript is not idle evidence: a terminal omp session can return {} while it runs.
 			local native_view
 			if pick==focused and record.read_at ~= -math.huge
 				and (record.dirty or not record.snapshot.todo or record.snapshot.todo.done<record.snapshot.todo.total) then
@@ -324,16 +319,6 @@ local function sample(cx, infos, read)
 				content = true
 			end
 			record.snapshot = snapshot
-			if record.empty_transcript and #(snapshot.steps or {})==0
-				and snapshot.response==nil and snapshot.todo==nil then
-				-- OMP can report a just-created, prompt-less session as working.
-				-- An empty transcript is the reliable signal that it is idle.
-				local info=by_pane[pick]
-				if info and info.state=="working" then info.state="idle" end
-				record.state="idle"
-				record.unseen=false
-				record.finished_at=nil
-			end
 			local todo=snapshot.todo
 			if todo and todo.done==todo.total and record.state=="idle" then record.progress_completed_at=record.progress_completed_at or now
 			else record.progress_completed_at=nil end

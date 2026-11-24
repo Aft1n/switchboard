@@ -117,8 +117,8 @@ local final=progress.sample({{role="user",text="follow up"}},last,"idle",{
 })
 assert(final.todo.done==7 and final.todo.total==7)
 assert(final.steps[1].label=="Final verification")
-local live=progress.sample({{role="user",text="new work"}},last,"working",nil)
-assert(live.todo.done==6 and #live.steps==0)
+local live=progress.sample({{role="user",text="steer"}},last,"working",nil)
+assert(live.todo.done==6 and #live.steps==1 and live.steps[1].label=="Final verification","a mid-run steer keeps the live step")
 assert(progress.from_view({name="Todos, 8 of 7 done"})==nil)
 print("finished cards retain steps and use native completed todo counts")
 -- The todo tool call can scroll out of the short transcript window; the list is session state.

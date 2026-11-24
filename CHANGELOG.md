@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.12
+
+- Running agents no longer render as idle when their OMP transcript is empty. An empty transcript is not treated as idle evidence anymore, so a terminal-run OMP session keeps Tern's working state instead of showing "Activity not reported".
+- Mid-run steers no longer blank the live step line. The latest tool call stays visible while the agent works, and a working agent with no step history shows a pulsing "Working…" instead of "No tool steps yet".
+
 ## 0.1.11
 
 - `alt+shift+n` no longer fails with "attempt to call a nil value": the new-chat-tab command forward-declares the workspace lookup it calls before the definition line is reached.
